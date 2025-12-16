@@ -1,3 +1,5 @@
+import re
+
 import requests
 import telebot
 import schedule
@@ -15,13 +17,32 @@ DATA_FILE = 'data/seen_cves.json'
 
 # 🚨 EDIT THIS LIST: Case-insensitive keywords to watch for
 WATCHLIST = [
-    "fastapi",
-    "next.js", "nextjs",
-    "react", "reactjs",
-    "python",
-    "typescript",
-    "node.js", "nodejs",  # Added common related tech
-    "django", "flask"  # Added common Python frameworks
+    # --- Web Stack (Your previous list) ---
+    "fastapi", "next.js", "nextjs", "react", "python", "typescript",
+
+    # --- Linux Core ---
+    "linux kernel",  # Best for catching kernel specific issues
+    "kernel",  # Broader, but might catch non-Linux kernels (rare in NVD)
+
+    # --- Linux Distributions (Distros) ---
+    "ubuntu",
+    "debian",
+    "redhat", "rhel",
+    "fedora",
+    "centos",
+    "suse",
+    "arch linux",
+
+    # --- Specific Kernel Subsystems (High Risk Areas) ---
+    "netfilter",  # Firewall / Packet filtering
+    "bpf", "ebpf",  # Berkeley Packet Filter (common attack vector)
+    "kvm",  # Virtualization
+    "bluetooth",  # Wireless drivers
+    "wifi", "wlan",  # Network drivers
+    "usb",  # USB drivers
+    "overlayfs",  # File system (common for privilege escalation)
+    "glibc",  # Core C library
+    "systemd"  # Init system
 ]
 # =================================================
 
@@ -81,7 +102,7 @@ def get_new_cves():
 
 def is_relevant(description):
     """
-    Checks if the description contains any keyword from the WATCHLIST.
+    Checks if the description contains any keyword as a WHOLE WORD.
     """
     if not description:
         return False
@@ -89,10 +110,15 @@ def is_relevant(description):
     desc_lower = description.lower()
 
     for keyword in WATCHLIST:
-        # We add spaces to avoid partial matches (e.g., matching "react" in "reaction")
-        # But for simple tech names, direct containment is usually fine.
-        if keyword in desc_lower:
+        # \b means "word boundary".
+        # It matches "react" but NOT "reaction", "create", etc.
+        pattern = r'\b' + re.escape(keyword) + r'\b'
+
+        if re.search(pattern, desc_lower):
+            # Debugging: Print what matched
+            print(f"✅ Match found! Keyword: '{keyword}' found in description.")
             return True
+
     return False
 
 
