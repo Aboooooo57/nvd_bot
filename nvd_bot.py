@@ -1,21 +1,22 @@
-import re
-
 import requests
 import telebot
 import schedule
 import time
-import json
+import csv  # <--- CHANGED: Using CSV now
 import os
 import html
+import re
 from datetime import datetime, timedelta, timezone
 
 # ================= CONFIGURATION =================
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 CHAT_ID = os.getenv('CHAT_ID')
 NVD_API_KEY = os.getenv('NVD_API_KEY')
-DATA_FILE = 'data/seen_cves.json'
 
-# 🚨 EDIT THIS LIST: Case-insensitive keywords to watch for
+# CHANGED: File extension is now .csv
+DATA_FILE = 'data/seen_cves.csv'
+
+# WATCHLIST (Your Keywords)
 WATCHLIST = [
     # --- Web Stack (Your previous list) ---
     "fastapi", "next.js", "nextjs", "react", "python", "typescript",
@@ -50,32 +51,75 @@ bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 
 
 def load_seen_cves():
+    """
+    Reads the CSV and returns a list of just the CVE IDs.
+    """
     if not os.path.exists(DATA_FILE):
         return []
+
+    seen_ids = []
     try:
-        with open(DATA_FILE, 'r') as f:
-            return json.load(f)
-    except (json.JSONDecodeError, IOError):
+        with open(DATA_FILE, 'r', newline='', encoding='utf-8') as f:
+            reader = csv.reader(f)
+            # Skip header if it exists
+            next(reader, None)
+            for row in reader:
+                if row:  # Avoid empty lines
+                    seen_ids.append(row[0])  # Column 0 is the ID
+        return seen_ids
+    except Exception as e:
+        print(f"Error reading CSV: {e}")
         return []
 
 
 def save_seen_cve(cve_id):
-    seen_ids = load_seen_cves()
-    if cve_id not in seen_ids:
-        seen_ids.append(cve_id)
-        if len(seen_ids) > 1000:
-            seen_ids = seen_ids[-1000:]
-        with open(DATA_FILE, 'w') as f:
-            json.dump(seen_ids, f)
+    """
+    Appends the new CVE to the CSV.
+    Enforces a Limit (FILO/Rolling Buffer): Keeps only the last 1000 entries.
+    """
+    # 1. Read all existing rows
+    rows = []
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, 'r', newline='', encoding='utf-8') as f:
+            reader = csv.reader(f)
+            rows = list(reader)
+
+    # 2. If file is empty, add Header
+    if not rows:
+        rows.append(["CVE_ID", "TIMESTAMP"])
+
+    # 3. Add the new entry (ID + Current Time)
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    rows.append([cve_id, timestamp])
+
+    # 4. Enforce Limit (Keep Header + Last 1000)
+    # rows[0] is header. rows[1:] is data.
+    header = rows[0]
+    data = rows[1:]
+
+    if len(data) > 1000:
+        # Slice to keep only the last 1000 items
+        data = data[-1000:]
+
+    # 5. Write everything back to file
+    with open(DATA_FILE, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerow(header)
+        writer.writerows(data)
 
 
 def get_new_cves():
     url = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+
+    # Time window calculation (UTC)
     now = datetime.now(timezone.utc)
-    last_window = now - timedelta(minutes=6)
+
+    # Check last 6 minutes (to cover the 5 min schedule safely)
+    start_window = now - timedelta(minutes=6)
+
     fmt = '%Y-%m-%dT%H:%M:%S.000'
     pub_end_date = now.strftime(fmt)
-    pub_start_date = last_window.strftime(fmt)
+    pub_start_date = start_window.strftime(fmt)
 
     params = {
         'pubStartDate': pub_start_date,
@@ -101,24 +145,13 @@ def get_new_cves():
 
 
 def is_relevant(description):
-    """
-    Checks if the description contains any keyword as a WHOLE WORD.
-    """
-    if not description:
-        return False
-
+    if not description: return False
     desc_lower = description.lower()
-
     for keyword in WATCHLIST:
-        # \b means "word boundary".
-        # It matches "react" but NOT "reaction", "create", etc.
-        pattern = r'\b' + re.escape(keyword) + r'\b'
-
+        # Use Regex for exact word matching (prevents "react" matching "reaction")
+        pattern = r'(?i)\b' + re.escape(keyword) + r'\b'
         if re.search(pattern, desc_lower):
-            # Debugging: Print what matched
-            print(f"✅ Match found! Keyword: '{keyword}' found in description.")
             return True
-
     return False
 
 
@@ -128,49 +161,40 @@ def format_and_send(cve_item):
 
     if not cve_id: return
 
-    # 1. Check Duplicates
+    # Check Duplicates (Reads from CSV)
     seen_ids = load_seen_cves()
     if cve_id in seen_ids:
         print(f"Skipping duplicate: {cve_id}")
         return
 
-    # 2. Extract Description
+    # Extract Description
     raw_description = "No description."
     for desc in cve.get('descriptions', []):
         if desc.get('lang') == 'en':
             raw_description = desc.get('value')
             break
 
-    # 3. Filter Logic (Check if relevant)
+    # Filter Logic
     if not is_relevant(raw_description):
         print(f"Skipping {cve_id} (Not in stack)")
-        save_seen_cve(cve_id)
+        save_seen_cve(cve_id)  # Save to CSV so we don't check again
         return
 
-    # 4. Format Description
+    # Format Message
     if len(raw_description) > 400:
         raw_description = raw_description[:397] + "..."
 
-    # First, sanitize HTML special characters to prevent errors
     safe_description = html.escape(raw_description)
 
-    # --- BOLDING LOGIC START ---
-    # We sort by length (longest first) to prevent issues (e.g. matching 'next' inside 'next.js')
+    # Bold Keywords
     sorted_keywords = sorted(WATCHLIST, key=len, reverse=True)
-
     for word in sorted_keywords:
-        # Create a regex pattern:
-        # (?i) = Case insensitive
-        # \b   = Word boundary (prevents bolding 'react' inside 'creation')
         pattern = r'(?i)\b(' + re.escape(word) + r')\b'
-
-        # Replace found word with <b>Word</b> (preserving original casing)
         safe_description = re.sub(pattern, r'<b>\1</b>', safe_description)
-    # --- BOLDING LOGIC END ---
 
     safe_cve_id = html.escape(cve_id)
 
-    # 5. Get Severity & Status
+    # Severity & Status
     severity = "PENDING"
     vuln_status = cve.get('vulnStatus', 'Unknown')
     metrics = cve.get('metrics', {})
@@ -205,7 +229,7 @@ def format_and_send(cve_item):
     try:
         bot.send_message(CHAT_ID, msg, parse_mode='HTML')
         print(f"Sent alert for {cve_id}")
-        save_seen_cve(cve_id)
+        save_seen_cve(cve_id)  # Save to CSV
     except Exception as e:
         print(f"Telegram Error: {e}")
 
@@ -221,9 +245,11 @@ def job():
 
 
 if __name__ == "__main__":
-    print(f"🛡️ Bot Running. Watching for: {', '.join(WATCHLIST)}")
+    print(f"🛡️ Bot Running (CSV Mode). Watching: {', '.join(WATCHLIST)}")
+
     job()
     schedule.every(5).minutes.do(job)
+
     while True:
         schedule.run_pending()
         time.sleep(1)
