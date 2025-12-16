@@ -4,11 +4,11 @@ Here is a professional and complete `README.md` for your project. You can save t
 
 # 🛡️ NVD Vulnerability Telegram Bot
 
-A Python-based Telegram bot that monitors the **National Vulnerability Database (NVD)** API for new security vulnerabilities (CVEs). It runs hourly, filters for specific technologies (like Python, React, Next.js), and sends real-time alerts to a Telegram chat.
+A Python-based Telegram bot that monitors the **National Vulnerability Database (NVD)** API for new security vulnerabilities (CVEs). It runs every 5 minute, filters for specific technologies (like Python, React, Next.js), and sends real-time alerts to a Telegram chat.
 
 ## ✨ Features
 
-*   **Hourly Updates**: Checks for new CVEs published within the last hour.
+*   **Hourly Updates**: Checks for new CVEs published within the last 6 minute.
 *   **Tech Stack Filtering**: Only sends alerts for technologies you care about (e.g., FastAPI, Next.js, React, TypeScript, Python).
 *   **Smart De-duplication**: Uses a local JSON database to ensure you never receive the same alert twice.
 *   **Status Tracking**: Handles "Pending" analysis states and displays severity scores when available.
