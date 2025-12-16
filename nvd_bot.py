@@ -184,7 +184,7 @@ def job():
 if __name__ == "__main__":
     print(f"🛡️ Bot Running. Watching for: {', '.join(WATCHLIST)}")
     job()
-    schedule.every(1).hours.do(job)
+    schedule.every(5).minute.do(job)
     while True:
         schedule.run_pending()
         time.sleep(1)
