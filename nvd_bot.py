@@ -141,22 +141,36 @@ def format_and_send(cve_item):
             raw_description = desc.get('value')
             break
 
-    # 3. --- FILTER LOGIC ---
-    # If the description does NOT contain our keywords, skip it.
+    # 3. Filter Logic (Check if relevant)
     if not is_relevant(raw_description):
         print(f"Skipping {cve_id} (Not in stack)")
-        # We mark it as seen so we don't process it again
         save_seen_cve(cve_id)
         return
-    # -----------------------
 
-    # Format Data
+    # 4. Format Description
     if len(raw_description) > 400:
         raw_description = raw_description[:397] + "..."
 
+    # First, sanitize HTML special characters to prevent errors
     safe_description = html.escape(raw_description)
+
+    # --- BOLDING LOGIC START ---
+    # We sort by length (longest first) to prevent issues (e.g. matching 'next' inside 'next.js')
+    sorted_keywords = sorted(WATCHLIST, key=len, reverse=True)
+
+    for word in sorted_keywords:
+        # Create a regex pattern:
+        # (?i) = Case insensitive
+        # \b   = Word boundary (prevents bolding 'react' inside 'creation')
+        pattern = r'(?i)\b(' + re.escape(word) + r')\b'
+
+        # Replace found word with <b>Word</b> (preserving original casing)
+        safe_description = re.sub(pattern, r'<b>\1</b>', safe_description)
+    # --- BOLDING LOGIC END ---
+
     safe_cve_id = html.escape(cve_id)
 
+    # 5. Get Severity & Status
     severity = "PENDING"
     vuln_status = cve.get('vulnStatus', 'Unknown')
     metrics = cve.get('metrics', {})
