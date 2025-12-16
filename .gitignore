@@ -1,0 +1,33 @@
+# Python Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environments
+venv/
+env/
+.venv/
+
+# Environment Variables & Secrets
+.env
+.env.local
+
+# IDE Settings (VS Code, Pycharm)
+.vscode/
+.idea/
+
+# OS Generated Files
+.DS_Store
+Thumbs.db
+
+# Project Data (Do not commit the history of seen CVEs)
+# We ignore all JSON files in the data folder
+# Ignore everything in data
+data/*
+# But keep the .gitkeep file (so the folder exists in Git)
+!data/.gitkeep
+# In case you ran it in the root folder previously
+seen_cves.json
+
+# Docker
+docker-compose.override.yml

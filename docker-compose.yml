@@ -1,0 +1,13 @@
+services:
+  nvd-bot:
+    build: .
+    container_name: nvd_bot
+    restart: unless-stopped
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - CHAT_ID=${CHAT_ID}
+      # - NVD_API_KEY=your_key_here  <-- Uncomment if you have one
+    volumes:
+      # Maps the container's data folder to your local data folder
+      # This ensures seen_cves.json is not deleted when you restart the bot
+      - ./data:/app/data

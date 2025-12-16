@@ -1,0 +1,27 @@
+# Git
+.git
+.gitignore
+
+# Python Cache & Virtual Envs
+__pycache__
+*.pyc
+venv
+env
+.venv
+
+# Secrets
+.env
+
+# Local Data (We want the container to start empty or use the volume, not copy local state)
+data/
+seen_cves.json
+
+# Docker configurations (Not needed inside the container)
+Dockerfile
+docker-compose.yml
+README.md
+
+# IDEs
+.vscode
+.idea
+.DS_Store
