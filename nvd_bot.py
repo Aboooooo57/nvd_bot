@@ -51,11 +51,10 @@ def save_seen_cve(cve_id):
 def get_new_cves():
     url = "https://services.nvd.nist.gov/rest/json/cves/2.0"
     now = datetime.now(timezone.utc)
-    last_hour = now - timedelta(hours=1)
-
+    last_window = now - timedelta(minutes=6)
     fmt = '%Y-%m-%dT%H:%M:%S.000'
     pub_end_date = now.strftime(fmt)
-    pub_start_date = last_hour.strftime(fmt)
+    pub_start_date = last_window.strftime(fmt)
 
     params = {
         'pubStartDate': pub_start_date,
