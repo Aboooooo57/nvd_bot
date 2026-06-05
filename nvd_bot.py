@@ -271,12 +271,16 @@ def send_daily_summary():
         for kw in sorted(all_keywords)
     )
 
-    # Build CVE lines
+    # Build CVE lines, each with its own hashtags
     cve_lines = []
     for alert in daily_alerts:
         sev = alert['severity']
         icon = '🚨' if sev in ('HIGH', 'CRITICAL') else ('⚠️' if sev == 'MEDIUM' else ('ℹ️' if sev == 'LOW' else '⏳'))
-        cve_lines.append(f"{icon} <b>{html.escape(alert['cve_id'])}</b>  [{sev}]")
+        kw_tags = ' '.join(
+            '#' + kw.replace(' ', '_').replace('.', '').replace('-', '')
+            for kw in sorted(alert['keywords'])
+        )
+        cve_lines.append(f"{icon} <b>{html.escape(alert['cve_id'])}</b>  [{sev}]  {kw_tags}")
 
     msg = (
         f"📅 <b>Daily CVE Summary — {today}</b>\n\n"
