@@ -49,6 +49,9 @@ WATCHLIST = [
 
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 
+# In-memory list of alerts sent today; reset after daily summary
+daily_alerts = []
+
 
 def load_seen_cves():
     """
@@ -230,6 +233,9 @@ def format_and_send(cve_item):
         bot.send_message(CHAT_ID, msg, parse_mode='HTML')
         print(f"Sent alert for {cve_id}")
         save_seen_cve(cve_id)  # Save to CSV
+        matched_keywords = [kw for kw in WATCHLIST
+                            if re.search(r'(?i)\b' + re.escape(kw) + r'\b', raw_description)]
+        daily_alerts.append({'cve_id': cve_id, 'severity': severity, 'keywords': matched_keywords})
     except Exception as e:
         print(f"Telegram Error: {e}")
 
@@ -244,11 +250,60 @@ def job():
         time.sleep(1)
 
 
+def send_daily_summary():
+    global daily_alerts
+    today = datetime.now().strftime('%Y-%m-%d')
+
+    if not daily_alerts:
+        print("No alerts today, skipping daily summary.")
+        daily_alerts = []
+        return
+
+    count = len(daily_alerts)
+
+    # Collect unique matched keywords for hashtags
+    all_keywords = set()
+    for alert in daily_alerts:
+        all_keywords.update(alert['keywords'])
+
+    hashtags = ' '.join(
+        '#' + kw.replace(' ', '_').replace('.', '').replace('-', '')
+        for kw in sorted(all_keywords)
+    )
+
+    # Build CVE lines, each with its own hashtags
+    cve_lines = []
+    for alert in daily_alerts:
+        sev = alert['severity']
+        icon = '🚨' if sev in ('HIGH', 'CRITICAL') else ('⚠️' if sev == 'MEDIUM' else ('ℹ️' if sev == 'LOW' else '⏳'))
+        kw_tags = ' '.join(
+            '#' + kw.replace(' ', '_').replace('.', '').replace('-', '')
+            for kw in sorted(alert['keywords'])
+        )
+        cve_lines.append(f"{icon} <b>{html.escape(alert['cve_id'])}</b>  [{sev}]  {kw_tags}")
+
+    msg = (
+        f"📅 <b>Daily CVE Summary — {today}</b>\n\n"
+        f"🔍 <b>{count}</b> alert(s) sent today:\n\n"
+        + '\n'.join(cve_lines)
+        + f"\n\n{hashtags}"
+    )
+
+    try:
+        bot.send_message(CHAT_ID, msg, parse_mode='HTML')
+        print(f"Daily summary sent: {count} alert(s)")
+    except Exception as e:
+        print(f"Telegram Error (daily summary): {e}")
+
+    daily_alerts = []  # Reset for the next day
+
+
 if __name__ == "__main__":
     print(f"🛡️ Bot Running (CSV Mode). Watching: {', '.join(WATCHLIST)}")
 
     job()
     schedule.every(5).minutes.do(job)
+    schedule.every().day.at("23:55").do(send_daily_summary)
 
     while True:
         schedule.run_pending()
