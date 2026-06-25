@@ -49,11 +49,29 @@ def init(registry, pending, gh, llm):
             BotCommand('removekeyword', 'Remove a watchlist keyword'),
             BotCommand('status',        'System status overview'),
             BotCommand('help',          'Show all commands'),
+            BotCommand('adduser',       'Allow a user (owner only)'),
+            BotCommand('removeuser',    'Remove a user (owner only)'),
         ])
         print('[bot] Commands registered with Telegram.')
     except Exception as e:
         print(f'[bot] Failed to register commands: {e}')
     return bot
+
+
+# ── Authorization ────────────────────────────────────────────────────────────
+
+def _authorized(msg) -> bool:
+    uid = msg.from_user.id if msg.from_user else None
+    if not uid:
+        return False
+    if config.TELEGRAM_OWNER_ID and uid == config.TELEGRAM_OWNER_ID:
+        return True
+    return uid in config.get('allowed_user_ids', [])
+
+
+def _is_owner(msg) -> bool:
+    uid = msg.from_user.id if msg.from_user else None
+    return bool(uid and config.TELEGRAM_OWNER_ID and uid == config.TELEGRAM_OWNER_ID)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -104,6 +122,7 @@ def _register_handlers():
     # ── /addrepo ─────────────────────────────────────────────────────────────
     @bot.message_handler(commands=['addrepo'])
     def cmd_addrepo(msg: Message):
+        if not _authorized(msg): return
         parts = msg.text.split(maxsplit=2)
         if len(parts) < 2:
             send('Usage: /addrepo &lt;github-url&gt; [optional-token]')
@@ -128,6 +147,7 @@ def _register_handlers():
     # ── /removerepo ───────────────────────────────────────────────────────────
     @bot.message_handler(commands=['removerepo'])
     def cmd_removerepo(msg: Message):
+        if not _authorized(msg): return
         parts = msg.text.split()
         if len(parts) < 2:
             send('Usage: /removerepo &lt;repo-id&gt;')
@@ -142,6 +162,7 @@ def _register_handlers():
     # ── /listrepos ────────────────────────────────────────────────────────────
     @bot.message_handler(commands=['listrepos'])
     def cmd_listrepos(msg: Message):
+        if not _authorized(msg): return
         repos = _registry.list_repos()
         if not repos:
             send('No repos tracked yet. Use /addrepo &lt;url&gt; to add one.')
@@ -161,6 +182,7 @@ def _register_handlers():
     # ── /scanrepo ─────────────────────────────────────────────────────────────
     @bot.message_handler(commands=['scanrepo'])
     def cmd_scanrepo(msg: Message):
+        if not _authorized(msg): return
         parts = msg.text.split()
         if len(parts) < 2:
             send('Usage: /scanrepo &lt;repo-id&gt;')
@@ -186,6 +208,7 @@ def _register_handlers():
     # ── /repoprofile ──────────────────────────────────────────────────────────
     @bot.message_handler(commands=['repoprofile'])
     def cmd_repoprofile(msg: Message):
+        if not _authorized(msg): return
         parts = msg.text.split()
         if len(parts) < 2:
             send('Usage: /repoprofile &lt;repo-id&gt;')
@@ -202,6 +225,7 @@ def _register_handlers():
     # ── /pending ──────────────────────────────────────────────────────────────
     @bot.message_handler(commands=['pending'])
     def cmd_pending(msg: Message):
+        if not _authorized(msg): return
         fixes = _pending.list_pending()
         if not fixes:
             send('No pending fix proposals.')
@@ -218,6 +242,7 @@ def _register_handlers():
     # ── /settings ─────────────────────────────────────────────────────────────
     @bot.message_handler(commands=['settings'])
     def cmd_settings(msg: Message):
+        if not _authorized(msg): return
         cfg = config.all_settings()
         lines = ['<b>Current Settings</b> (data/config.json)\n']
         for k, v in sorted(cfg.items()):
@@ -227,6 +252,7 @@ def _register_handlers():
     # ── /setconfig ────────────────────────────────────────────────────────────
     @bot.message_handler(commands=['setconfig'])
     def cmd_setconfig(msg: Message):
+        if not _authorized(msg): return
         parts = msg.text.split(maxsplit=2)
         if len(parts) < 3:
             send('Usage: /setconfig &lt;key&gt; &lt;value&gt;\nExample: /setconfig severity_threshold HIGH')
@@ -243,6 +269,7 @@ def _register_handlers():
     # ── /addkeyword / /removekeyword ──────────────────────────────────────────
     @bot.message_handler(commands=['addkeyword'])
     def cmd_addkeyword(msg: Message):
+        if not _authorized(msg): return
         parts = msg.text.split(maxsplit=1)
         if len(parts) < 2:
             send('Usage: /addkeyword &lt;word&gt;')
@@ -256,6 +283,7 @@ def _register_handlers():
 
     @bot.message_handler(commands=['removekeyword'])
     def cmd_removekeyword(msg: Message):
+        if not _authorized(msg): return
         parts = msg.text.split(maxsplit=1)
         if len(parts) < 2:
             send('Usage: /removekeyword &lt;word&gt;')
@@ -270,6 +298,7 @@ def _register_handlers():
     # ── /setrepo ──────────────────────────────────────────────────────────────
     @bot.message_handler(commands=['setrepo'])
     def cmd_setrepo(msg: Message):
+        if not _authorized(msg): return
         parts = msg.text.split(maxsplit=3)
         if len(parts) < 4:
             send('Usage: /setrepo &lt;repo-id&gt; &lt;key&gt; &lt;value&gt;\n'
@@ -292,6 +321,7 @@ def _register_handlers():
     # ── /status ───────────────────────────────────────────────────────────────
     @bot.message_handler(commands=['status'])
     def cmd_status(msg: Message):
+        if not _authorized(msg): return
         repos = _registry.list_repos()
         pending_count = len(_pending.list_pending())
         send(
@@ -304,9 +334,41 @@ def _register_handlers():
             f'⏱ Commit poll: every {config.get("commit_poll_interval_minutes")} min'
         )
 
+    # ── /adduser / /removeuser (owner-only) ──────────────────────────────────
+    @bot.message_handler(commands=['adduser'])
+    def cmd_adduser(msg: Message):
+        if not _is_owner(msg):
+            return
+        parts = msg.text.split()
+        if len(parts) < 2 or not parts[1].isdigit():
+            send('Usage: /adduser &lt;telegram-user-id&gt;')
+            return
+        uid = int(parts[1])
+        ok = config.add_allowed_user(uid)
+        if ok:
+            send(f'✅ User <code>{uid}</code> added to allowlist.')
+        else:
+            send(f'ℹ️ User <code>{uid}</code> is already in the allowlist.')
+
+    @bot.message_handler(commands=['removeuser'])
+    def cmd_removeuser(msg: Message):
+        if not _is_owner(msg):
+            return
+        parts = msg.text.split()
+        if len(parts) < 2 or not parts[1].isdigit():
+            send('Usage: /removeuser &lt;telegram-user-id&gt;')
+            return
+        uid = int(parts[1])
+        ok = config.remove_allowed_user(uid)
+        if ok:
+            send(f'✅ User <code>{uid}</code> removed from allowlist.')
+        else:
+            send(f'❌ User <code>{uid}</code> not found in allowlist.')
+
     # ── /help ─────────────────────────────────────────────────────────────────
     @bot.message_handler(commands=['help', 'start'])
     def cmd_help(msg: Message):
+        if not _authorized(msg): return
         send(
             '<b>NVD Bot Commands</b>\n\n'
             '<b>Repo Management</b>\n'
@@ -324,12 +386,18 @@ def _register_handlers():
             '/addkeyword &lt;word&gt; — Add CVE watchlist keyword\n'
             '/removekeyword &lt;word&gt; — Remove watchlist keyword\n\n'
             '<b>Info</b>\n'
-            '/status — System status overview'
+            '/status — System status overview\n\n'
+            '<b>User Management (owner only)</b>\n'
+            '/adduser &lt;id&gt; — Allow a Telegram user to use this bot\n'
+            '/removeuser &lt;id&gt; — Remove a user from the allowlist'
         )
 
     # ── Inline keyboard callbacks ─────────────────────────────────────────────
     @bot.callback_query_handler(func=lambda call: call.data.startswith('fix:'))
     def handle_fix_callback(call: CallbackQuery):
+        if not _authorized(call):
+            bot.answer_callback_query(call.id, 'Unauthorized.')
+            return
         try:
             _, action, fix_id = call.data.split(':', 2)
         except ValueError:
