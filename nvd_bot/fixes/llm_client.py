@@ -15,8 +15,6 @@ class LLMClient:
     def generate(self, system_prompt: str, user_prompt: str,
                  max_tokens: int | None = None,
                  model_override: str | None = None) -> str:
-        import litellm
-
         provider = self.active_provider()
         if provider != config.get('llm_provider', 'openrouter'):
             print('[llm] Auto-detected litellm_proxy (LITELLM_BASE_URL set, no OPENROUTER_API_KEY)')
@@ -29,28 +27,30 @@ class LLMClient:
             messages.append({'role': 'system', 'content': system_prompt})
         messages.append({'role': 'user', 'content': user_prompt})
 
-        kwargs: dict = {
-            'messages': messages,
-            'max_tokens': max_tok,
-        }
+        if provider == 'litellm_proxy':
+            # Use the OpenAI client directly so the model name is sent as-is.
+            # litellm.completion() rewrites provider-prefixed model names (e.g.
+            # strips gemini/ before forwarding), which breaks proxy key validation.
+            import openai
+            base_url = config.LITELLM_BASE_URL or ''
+            api_key = config.LITELLM_API_KEY or 'sk-placeholder'
+            print(f'[llm] litellm_proxy: model="{model}" → {base_url}')
+            client = openai.OpenAI(api_key=api_key, base_url=base_url)
+            response = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                max_tokens=max_tok,
+            )
+            return response.choices[0].message.content or ''
 
+        # OpenRouter (and any other litellm-routed provider)
+        import litellm
+        kwargs: dict = {'messages': messages, 'max_tokens': max_tok}
         if provider == 'openrouter':
             if config.OPENROUTER_API_KEY:
                 kwargs['api_key'] = config.OPENROUTER_API_KEY
                 kwargs['api_base'] = 'https://openrouter.ai/api/v1'
             kwargs['model'] = model
-        elif provider == 'litellm_proxy':
-            if config.LITELLM_API_KEY:
-                kwargs['api_key'] = config.LITELLM_API_KEY
-            if config.LITELLM_BASE_URL:
-                kwargs['api_base'] = config.LITELLM_BASE_URL
-            # The LiteLLM SDK strips known provider prefixes (e.g. gemini/, anthropic/)
-            # before forwarding to the proxy. Prepend openai/ to force OpenAI-compatible
-            # protocol and pass the full model name through unchanged.
-            # e.g. openai/gemini/gemini-3.5-flash → proxy receives gemini/gemini-3.5-flash
-            proxy_model = model if model.startswith('openai/') else f'openai/{model}'
-            kwargs['model'] = proxy_model
-            print(f'[llm] litellm_proxy: model="{proxy_model}" → {config.LITELLM_BASE_URL}')
 
         try:
             response = litellm.completion(**kwargs)
