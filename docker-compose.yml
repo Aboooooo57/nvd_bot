@@ -1,8 +1,13 @@
 services:
   nvd-bot:
-    build: .
+    build:
+      context: .
+      network: host
     container_name: nvd_bot
     restart: unless-stopped
+    network_mode: "host"
+    env_file:
+      - .env
     environment:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - CHAT_ID=${CHAT_ID}
