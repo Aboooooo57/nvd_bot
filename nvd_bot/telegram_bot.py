@@ -138,13 +138,10 @@ def _register_handlers():
         try:
             profile = _registry.add_repo(url, github_token=token)
             send(f'✅ Repo added: <b>{html.escape(profile.name)}</b>\nID: <code>{profile.id}</code>\nScanning packages…')
-            scan_repo(profile, _gh)
+            scan_repo(profile, _gh, _llm)
             _registry.update_profile(profile)
-            pkg_msg = (f'{profile.package_count()} packages found'
-                       if profile.package_count() > 0
-                       else 'no dependency files found (requirements.txt / package.json / etc. not detected)')
             send(f'📦 Scan complete for <b>{html.escape(profile.name)}</b>: '
-                 f'{pkg_msg}, language: {profile.language}')
+                 f'{_pkg_summary(profile)}, language: {profile.language}')
         except Exception as e:
             send(f'❌ Error adding repo: {html.escape(str(e))}')
 
@@ -202,13 +199,10 @@ def _register_handlers():
     def _scan_task(profile):
         from nvd_bot.repos.scanner import scan_repo
         try:
-            scan_repo(profile, _gh)
+            scan_repo(profile, _gh, _llm)
             _registry.update_profile(profile)
-            pkg_msg = (f'{profile.package_count()} packages found'
-                       if profile.package_count() > 0
-                       else 'no dependency files found')
             send(f'✅ Scan done: <b>{html.escape(profile.name)}</b> — '
-                 f'{pkg_msg}, language: {profile.language}')
+                 f'{_pkg_summary(profile)}, language: {profile.language}')
         except Exception as e:
             send(f'❌ Scan failed: {html.escape(str(e))}')
 
@@ -337,6 +331,19 @@ def _register_handlers():
 
     def _llmcheck_task(model: str, is_override: bool):
         import time
+        provider = _llm.active_provider()
+        cfg_provider = config.get('llm_provider', 'openrouter')
+        auto_note = ' (auto-detected)' if provider != cfg_provider else ''
+        base_url = config.LITELLM_BASE_URL or '—'
+        key_status = 'set' if (
+            (provider == 'openrouter' and config.OPENROUTER_API_KEY) or
+            (provider == 'litellm_proxy' and config.LITELLM_API_KEY)
+        ) else 'NOT SET'
+
+        model_warn = ''
+        if provider == 'litellm_proxy' and model.startswith('openrouter/') and not is_override:
+            model_warn = '\n⚠️ Model has <code>openrouter/</code> prefix — use /setconfig llm_model &lt;model&gt; to fix'
+
         try:
             t0 = time.monotonic()
             response = _llm.generate(
@@ -349,15 +356,23 @@ def _register_handlers():
             snippet = (response or '').strip()[:100]
             send(
                 f'✅ <b>LLM healthy</b>\n'
+                f'Provider: <code>{html.escape(provider)}{auto_note}</code>\n'
                 f'Model: <code>{html.escape(model)}</code>\n'
+                f'Base URL: <code>{html.escape(base_url)}</code>\n'
+                f'API key: {key_status}\n'
                 f'Latency: {elapsed_ms} ms\n'
                 f'Response: <i>{html.escape(snippet)}</i>'
+                + model_warn
             )
         except Exception as e:
             send(
                 f'❌ <b>LLM check failed</b>\n'
+                f'Provider: <code>{html.escape(provider)}{auto_note}</code>\n'
                 f'Model: <code>{html.escape(model)}</code>\n'
+                f'Base URL: <code>{html.escape(base_url)}</code>\n'
+                f'API key: {key_status}\n'
                 f'Error: {html.escape(str(e))}'
+                + model_warn
             )
 
     # ── /status ───────────────────────────────────────────────────────────────
@@ -547,6 +562,16 @@ def _register_handlers():
         else:
             _pending.update_status(fix_id, 'failed')
             send(f'❌ Fix committed but PR creation failed for {fix.cve_id}')
+
+
+def _pkg_summary(profile) -> str:
+    """Return a human-readable package count string for scan messages."""
+    count = profile.package_count()
+    if count == 0:
+        return 'no dependency files found'
+    is_llm = 'llm-inferred' in profile.packages
+    suffix = ' (LLM-inferred — verify manually)' if is_llm else ''
+    return f'{count} packages found{suffix}'
 
 
 def _coerce(val: str):
