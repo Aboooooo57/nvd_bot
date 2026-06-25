@@ -7,11 +7,12 @@ class LLMClient:
         pass
 
     def generate(self, system_prompt: str, user_prompt: str,
-                 max_tokens: int | None = None) -> str:
+                 max_tokens: int | None = None,
+                 model_override: str | None = None) -> str:
         import litellm
 
         provider = config.get('llm_provider', 'openrouter')
-        model = config.get('llm_model', 'openrouter/anthropic/claude-3-haiku')
+        model = model_override or config.get('llm_model', 'openrouter/anthropic/claude-3-haiku')
         max_tok = max_tokens or config.get('llm_max_tokens', 2000)
 
         kwargs: dict = {

@@ -47,6 +47,7 @@ def init(registry, pending, gh, llm):
             BotCommand('setconfig',     'Update a config value live'),
             BotCommand('addkeyword',    'Add a CVE watchlist keyword'),
             BotCommand('removekeyword', 'Remove a watchlist keyword'),
+            BotCommand('llmcheck',      'Test LLM connection'),
             BotCommand('status',        'System status overview'),
             BotCommand('help',          'Show all commands'),
             BotCommand('adduser',       'Allow a user (owner only)'),
@@ -139,8 +140,11 @@ def _register_handlers():
             send(f'✅ Repo added: <b>{html.escape(profile.name)}</b>\nID: <code>{profile.id}</code>\nScanning packages…')
             scan_repo(profile, _gh)
             _registry.update_profile(profile)
+            pkg_msg = (f'{profile.package_count()} packages found'
+                       if profile.package_count() > 0
+                       else 'no dependency files found (requirements.txt / package.json / etc. not detected)')
             send(f'📦 Scan complete for <b>{html.escape(profile.name)}</b>: '
-                 f'{profile.package_count()} packages, language: {profile.language}')
+                 f'{pkg_msg}, language: {profile.language}')
         except Exception as e:
             send(f'❌ Error adding repo: {html.escape(str(e))}')
 
@@ -200,8 +204,11 @@ def _register_handlers():
         try:
             scan_repo(profile, _gh)
             _registry.update_profile(profile)
+            pkg_msg = (f'{profile.package_count()} packages found'
+                       if profile.package_count() > 0
+                       else 'no dependency files found')
             send(f'✅ Scan done: <b>{html.escape(profile.name)}</b> — '
-                 f'{profile.package_count()} packages, language: {profile.language}')
+                 f'{pkg_msg}, language: {profile.language}')
         except Exception as e:
             send(f'❌ Scan failed: {html.escape(str(e))}')
 
@@ -318,6 +325,41 @@ def _register_handlers():
         _registry.update_profile(profile)
         send(f'✅ <b>{html.escape(profile.name)}</b>: <code>{key}</code> = <code>{html.escape(str(val))}</code>')
 
+    # ── /llmcheck ─────────────────────────────────────────────────────────────
+    @bot.message_handler(commands=['llmcheck'])
+    def cmd_llmcheck(msg: Message):
+        if not _authorized(msg): return
+        parts = msg.text.split(maxsplit=1)
+        model_override = parts[1].strip() if len(parts) > 1 else None
+        model = model_override or config.get('llm_model', 'unknown')
+        send(f'🔍 Testing LLM: <code>{html.escape(model)}</code>…')
+        _executor.submit(_llmcheck_task, model, model_override is not None)
+
+    def _llmcheck_task(model: str, is_override: bool):
+        import time
+        try:
+            t0 = time.monotonic()
+            response = _llm.generate(
+                system_prompt='',
+                user_prompt='Reply with just the word OK',
+                max_tokens=10,
+                model_override=model if is_override else None,
+            )
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            snippet = (response or '').strip()[:100]
+            send(
+                f'✅ <b>LLM healthy</b>\n'
+                f'Model: <code>{html.escape(model)}</code>\n'
+                f'Latency: {elapsed_ms} ms\n'
+                f'Response: <i>{html.escape(snippet)}</i>'
+            )
+        except Exception as e:
+            send(
+                f'❌ <b>LLM check failed</b>\n'
+                f'Model: <code>{html.escape(model)}</code>\n'
+                f'Error: {html.escape(str(e))}'
+            )
+
     # ── /status ───────────────────────────────────────────────────────────────
     @bot.message_handler(commands=['status'])
     def cmd_status(msg: Message):
@@ -386,7 +428,8 @@ def _register_handlers():
             '/addkeyword &lt;word&gt; — Add CVE watchlist keyword\n'
             '/removekeyword &lt;word&gt; — Remove watchlist keyword\n\n'
             '<b>Info</b>\n'
-            '/status — System status overview\n\n'
+            '/status — System status overview\n'
+            '/llmcheck [model] — Test LLM connection\n\n'
             '<b>User Management (owner only)</b>\n'
             '/adduser &lt;id&gt; — Allow a Telegram user to use this bot\n'
             '/removeuser &lt;id&gt; — Remove a user from the allowlist'
