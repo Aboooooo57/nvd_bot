@@ -31,10 +31,11 @@ _FRAMEWORK_MARKERS: dict[str, str] = {
 }
 
 
-def scan_repo(profile: RepoProfile, gh: GithubClient) -> dict:
+def scan_repo(profile: RepoProfile, gh: GithubClient, llm=None) -> dict:
     """
     Fetches package files from the target repo and returns updated packages dict.
     Also writes the updated .nvd_bot/profile.json back to the target repo.
+    Falls back to LLM-based package inference if no standard dep files are found.
     Returns the updated packages dict.
     """
     owner, repo = _split_name(profile.name)
@@ -57,6 +58,11 @@ def scan_repo(profile: RepoProfile, gh: GithubClient) -> dict:
                 packages[matched_path] = parsed
                 print(f'[scanner] {profile.name}: parsed {matched_path} ({len(parsed)} packages)')
 
+    # LLM fallback: if no dep files found, ask the LLM to infer packages from file list
+    if not packages and llm:
+        print(f'[scanner] {profile.name}: no dep files found, trying LLM inference…')
+        packages = _infer_packages_with_llm(profile, gh, all_files, llm)
+
     language, frameworks = _detect_language(all_files, packages)
 
     # Update profile fields
@@ -69,6 +75,53 @@ def scan_repo(profile: RepoProfile, gh: GithubClient) -> dict:
     _push_profile(profile, gh, owner, repo)
 
     return packages
+
+
+def _infer_packages_with_llm(profile: RepoProfile, gh: GithubClient,
+                              all_files: list[str], llm) -> dict:
+    """Ask the LLM to infer dependencies from the repo file list + README."""
+    owner, repo = _split_name(profile.name)
+
+    # Prioritise likely-relevant files for context (cap at 80 paths)
+    file_sample = all_files[:80]
+
+    readme_content = ''
+    for readme_name in ('README.md', 'README.rst', 'README'):
+        if readme_name in all_files:
+            content = gh.get_file_content(owner, repo, readme_name, token=profile.github_token)
+            if content and len(content) < 3000:
+                readme_content = content[:3000]
+            break
+
+    system_prompt = (
+        'You are a dependency analyzer. Given a list of files from a software repository, '
+        'identify what external packages/libraries this project depends on. '
+        'Return ONLY valid JSON in this exact format with no extra text: '
+        '{"packages": {"package-name": "version-or-unknown"}} '
+        'Use "unknown" for versions you cannot determine from the file list. '
+        'Only include real external dependencies — not standard library modules, '
+        'not the repo itself, not test utilities unless they are well-known packages.'
+    )
+    user_prompt = (
+        f'Repository: {profile.name}\n\n'
+        f'Files in repo:\n' + '\n'.join(file_sample) +
+        (f'\n\nREADME:\n{readme_content}' if readme_content else '')
+    )
+
+    try:
+        response = llm.generate(system_prompt, user_prompt, max_tokens=800)
+        # Strip markdown fences if present
+        import re as _re
+        json_match = _re.search(r'\{.*\}', response, _re.DOTALL)
+        if json_match:
+            data = json.loads(json_match.group())
+            pkgs = {k: str(v) for k, v in data.get('packages', {}).items() if k}
+            if pkgs:
+                print(f'[scanner] {profile.name}: LLM inferred {len(pkgs)} packages')
+                return {'llm-inferred': pkgs}
+    except Exception as e:
+        print(f'[scanner] LLM inference failed: {e}')
+    return {}
 
 
 def _push_profile(profile: RepoProfile, gh: GithubClient, owner: str, repo: str):
