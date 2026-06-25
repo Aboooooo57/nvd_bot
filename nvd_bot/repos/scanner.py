@@ -46,15 +46,16 @@ def scan_repo(profile: RepoProfile, gh: GithubClient) -> dict:
     packages: dict[str, dict[str, str]] = {}
 
     for dep_file in _DEP_FILES:
-        if dep_file not in all_files:
-            continue
-        content = gh.get_file_content(owner, repo, dep_file, token=profile.github_token)
-        if not content:
-            continue
-        parsed = _parse_file(dep_file, content)
-        if parsed:
-            packages[dep_file] = parsed
-            print(f'[scanner] {profile.name}: parsed {dep_file} ({len(parsed)} packages)')
+        # Match by suffix so files in any subdirectory are found
+        matched_paths = [f for f in all_files if f == dep_file or f.endswith('/' + dep_file)]
+        for matched_path in matched_paths:
+            content = gh.get_file_content(owner, repo, matched_path, token=profile.github_token)
+            if not content:
+                continue
+            parsed = _parse_file(dep_file, content)
+            if parsed:
+                packages[matched_path] = parsed
+                print(f'[scanner] {profile.name}: parsed {matched_path} ({len(parsed)} packages)')
 
     language, frameworks = _detect_language(all_files, packages)
 
