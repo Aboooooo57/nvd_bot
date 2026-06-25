@@ -44,13 +44,8 @@ class LLMClient:
                 kwargs['api_key'] = config.LITELLM_API_KEY
             if config.LITELLM_BASE_URL:
                 kwargs['api_base'] = config.LITELLM_BASE_URL
-            # LiteLLM proxy exposes an OpenAI-compatible API.
-            # Prefix with "openai/" so the SDK uses that protocol toward the proxy.
-            # Keep the full model name (e.g. gemini/gemini-1.5-flash) — the proxy
-            # expects the model name exactly as configured in its own config.
-            proxy_model = model if model.startswith('openai/') else f'openai/{model}'
-            kwargs['model'] = proxy_model
-            print(f'[llm] litellm_proxy: sending model="{proxy_model}" to {config.LITELLM_BASE_URL}')
+            kwargs['model'] = model
+            print(f'[llm] litellm_proxy: model="{model}" → {config.LITELLM_BASE_URL}')
 
         try:
             response = litellm.completion(**kwargs)
