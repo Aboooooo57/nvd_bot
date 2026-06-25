@@ -24,18 +24,12 @@ class LLMClient:
         model = model_override or config.get('llm_model', 'openrouter/anthropic/claude-3-haiku')
         max_tok = max_tokens or config.get('llm_max_tokens', 2000)
 
-        # Warn if model looks like an OpenRouter-format model but we're using LiteLLM proxy
-        if provider == 'litellm_proxy' and model.startswith('openrouter/') and not model_override:
-            print(f'[llm] Warning: model "{model}" has openrouter/ prefix but provider is litellm_proxy. '
-                  'Use /setconfig llm_model <your-litellm-model-name> to fix.')
-
         messages = []
         if system_prompt:
             messages.append({'role': 'system', 'content': system_prompt})
         messages.append({'role': 'user', 'content': user_prompt})
 
         kwargs: dict = {
-            'model': model,
             'messages': messages,
             'max_tokens': max_tok,
         }
@@ -44,11 +38,18 @@ class LLMClient:
             if config.OPENROUTER_API_KEY:
                 kwargs['api_key'] = config.OPENROUTER_API_KEY
                 kwargs['api_base'] = 'https://openrouter.ai/api/v1'
+            kwargs['model'] = model
         elif provider == 'litellm_proxy':
             if config.LITELLM_API_KEY:
                 kwargs['api_key'] = config.LITELLM_API_KEY
             if config.LITELLM_BASE_URL:
                 kwargs['api_base'] = config.LITELLM_BASE_URL
+            # LiteLLM proxy exposes an OpenAI-compatible API.
+            # Prefix with "openai/" so the SDK uses that protocol toward the proxy.
+            # Strip any existing provider prefix (e.g. "gemini/", "openrouter/") first.
+            bare_model = model.split('/', 1)[-1] if '/' in model else model
+            kwargs['model'] = f'openai/{bare_model}'
+            print(f'[llm] litellm_proxy: sending model="openai/{bare_model}" to {config.LITELLM_BASE_URL}')
 
         try:
             response = litellm.completion(**kwargs)
