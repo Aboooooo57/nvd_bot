@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
 
 import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message, BotCommand
 
 from nvd_bot import config
 
@@ -34,6 +34,25 @@ def init(registry, pending, gh, llm):
     _llm = llm
     bot = telebot.TeleBot(config.TELEGRAM_BOT_TOKEN, parse_mode='HTML')
     _register_handlers()
+    try:
+        bot.set_my_commands([
+            BotCommand('addrepo',       'Track a GitHub repo'),
+            BotCommand('removerepo',    'Stop tracking a repo'),
+            BotCommand('listrepos',     'List all tracked repos'),
+            BotCommand('scanrepo',      'Force re-scan a repo now'),
+            BotCommand('repoprofile',   'Show full repo profile JSON'),
+            BotCommand('setrepo',       'Set a per-repo config override'),
+            BotCommand('pending',       'List pending fix proposals'),
+            BotCommand('settings',      'Show all current settings'),
+            BotCommand('setconfig',     'Update a config value live'),
+            BotCommand('addkeyword',    'Add a CVE watchlist keyword'),
+            BotCommand('removekeyword', 'Remove a watchlist keyword'),
+            BotCommand('status',        'System status overview'),
+            BotCommand('help',          'Show all commands'),
+        ])
+        print('[bot] Commands registered with Telegram.')
+    except Exception as e:
+        print(f'[bot] Failed to register commands: {e}')
     return bot
 
 
