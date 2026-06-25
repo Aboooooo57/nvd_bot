@@ -20,12 +20,11 @@ env/
 .DS_Store
 Thumbs.db
 
-# Project Data (Do not commit the history of seen CVEs)
-# We ignore all JSON files in the data folder
-# Ignore everything in data
-data/*
-# But keep the .gitkeep file (so the folder exists in Git)
-!data/.gitkeep
+# Project Data — ignore runtime data, keep structure
+data/seen_cves.csv
+data/pending_fixes.json
+# Keep config.json and repos registry in version control
+# (so settings survive container rebuilds)
 # In case you ran it in the root folder previously
 seen_cves.json
 

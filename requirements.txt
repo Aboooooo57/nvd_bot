@@ -5,3 +5,5 @@ pyTelegramBotAPI==4.29.1
 requests==2.32.5
 schedule==1.2.2
 urllib3==2.6.2
+litellm>=1.40.0
+packaging>=24.0
