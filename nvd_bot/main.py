@@ -102,69 +102,59 @@ def process_cve(cve_item: dict, registry: RepoRegistry,
 
     print(f'[main] {cve_id} ({severity}): {len(matches)} repo match(es)')
 
-    # Submit fix generation for each matching repo (non-blocking)
-    if matches and llm and config.OPENROUTER_API_KEY or config.LITELLM_API_KEY:
+    # Create GitHub issues for each matching repo (non-blocking)
+    if matches:
         executor = ThreadPoolExecutor(max_workers=2)
         for match in matches:
-            executor.submit(_handle_match, match, cve_item, pending, gh, llm)
+            executor.submit(_handle_match, match, cve_item, gh)
 
 
-def _handle_match(match, cve_item: dict, pending: PendingFixStore,
-                   gh: GithubClient, llm: LLMClient):
-    from nvd_bot.fixes.proposer import generate_fix
-    print(f'[main] Generating fix for {match.cve_id} in {match.repo.name}')
-    try:
-        fix = generate_fix(match, cve_item, gh, llm)
-    except Exception as e:
-        print(f'[main] Fix generation error: {e}')
-        tgbot.send(f'⚠️ Could not generate fix for <b>{html.escape(match.repo.name)}</b> '
-                   f'/ {html.escape(match.cve_id)}: {html.escape(str(e))}')
-        return
-
-    if not fix:
-        return
-
-    pending.add(fix)
-
-    auto_pr = match.repo.get_config('auto_pr', config.get('auto_pr', False))
-    if auto_pr:
-        _auto_apply(fix, match.repo, gh, pending)
-    else:
-        tgbot.send_fix_proposal(fix)
-
-
-def _auto_apply(fix, repo, gh: GithubClient, pending: PendingFixStore):
+def _handle_match(match, cve_item: dict, gh: GithubClient):
     from nvd_bot.repos.scanner import _split_name
-    owner, repo_name = _split_name(repo.name)
-    token = repo.github_token
-    base_branch = repo.get_config('pr_base_branch', config.get('pr_base_branch', 'main'))
-    prefix = repo.get_config('pr_branch_prefix', config.get('pr_branch_prefix', 'security/fix'))
-    branch = f'{prefix}-{fix.cve_id.lower()}-{fix.fix_id}'
-
-    sha = gh.get_latest_commit_sha(owner, repo_name, token=token, branch=base_branch)
-    if not sha:
-        pending.update_status(fix.fix_id, 'failed')
+    cve_id, description, severity, _ = extract_meta(cve_item)
+    owner, repo_name = _split_name(match.repo.name)
+    if not owner:
         return
 
-    gh.create_branch(owner, repo_name, branch, sha, token=token)
-    ok = gh.commit_file(owner, repo_name, fix.file_path, fix.fixed_content,
-                         f'fix: patch {fix.cve_id}', branch, token=token)
-    if not ok:
-        pending.update_status(fix.fix_id, 'failed')
-        return
+    pkg_lines = []
+    for pkg in match.matched_packages:
+        ver = match.current_versions.get(pkg, 'unknown')
+        specs = match.affected_specs.get(pkg, [])
+        spec_str = ', '.join(specs) if specs else 'unknown range'
+        pkg_lines.append(f'- **{pkg}** (installed: `{ver}`, vulnerable: `{spec_str}`)')
 
-    pr_url = gh.create_pull_request(
-        owner, repo_name,
-        title=f'Security: fix {fix.cve_id} in {fix.file_path}',
-        body=f'## Auto-fix\n\n**CVE:** {fix.cve_id}\n\n{fix.explanation}\n\n*Auto-applied by NVD Bot*',
-        head=branch, base=base_branch, token=token,
+    source_files = sorted(set(match.source_files.values()))
+
+    title = f'Security: {cve_id} affects {", ".join(match.matched_packages[:3])}'
+    body = (
+        f'## {cve_id} — {severity}\n\n'
+        f'{description}\n\n'
+        f'### Affected packages\n\n'
+        + '\n'.join(pkg_lines) + '\n\n'
+        + f'### Source files\n\n'
+        + '\n'.join(f'- `{f}`' for f in source_files) + '\n\n'
+        + f'🔗 https://nvd.nist.gov/vuln/detail/{cve_id}\n\n'
+        + '*Detected automatically by NVD Bot*'
     )
-    if pr_url:
-        pending.update_status(fix.fix_id, 'applied', pr_url=pr_url)
-        tgbot.send(f'⚡ Auto-PR created for <b>{html.escape(repo.name)}</b>\n'
-                   f'{html.escape(fix.cve_id)}: <a href="{html.escape(pr_url)}">View PR</a>')
+
+    token = match.repo.github_token
+    print(f'[main] Creating issue for {cve_id} in {match.repo.name}')
+    issue_url = gh.create_issue(owner, repo_name, title, body,
+                                labels=['security'], token=token)
+    if issue_url:
+        tgbot.send(
+            f'🔒 <b>Security issue created</b> in <b>{html.escape(match.repo.name)}</b>\n'
+            f'CVE: <code>{html.escape(cve_id)}</code> | Severity: {html.escape(severity)}\n'
+            f'Packages: <code>{html.escape(", ".join(match.matched_packages))}</code>\n'
+            f'<a href="{html.escape(issue_url)}">View Issue →</a>'
+        )
+        print(f'[main] Issue created: {issue_url}')
     else:
-        pending.update_status(fix.fix_id, 'failed')
+        tgbot.send(
+            f'⚠️ Could not create issue for <b>{html.escape(match.repo.name)}</b> '
+            f'/ {html.escape(cve_id)}'
+        )
+
 
 
 # ── Scheduled jobs ────────────────────────────────────────────────────────────
