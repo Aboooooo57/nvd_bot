@@ -568,7 +568,10 @@ def _pkg_summary(profile) -> str:
     """Return a human-readable package count string for scan messages."""
     count = profile.package_count()
     if count == 0:
-        return 'no dependency files found'
+        err = getattr(profile, '_llm_scan_error', None)
+        if err:
+            return f'no dep files found, and LLM inference failed: {err[:200]}'
+        return 'no dependency files found (LLM inference found nothing either)'
     is_llm = 'llm-inferred' in profile.packages
     suffix = ' (LLM-inferred — verify manually)' if is_llm else ''
     return f'{count} packages found{suffix}'

@@ -59,9 +59,14 @@ def scan_repo(profile: RepoProfile, gh: GithubClient, llm=None) -> dict:
                 print(f'[scanner] {profile.name}: parsed {matched_path} ({len(parsed)} packages)')
 
     # LLM fallback: if no dep files found, ask the LLM to infer packages from file list
+    profile._llm_scan_error = None  # transient; not serialised by to_dict()
     if not packages and llm:
         print(f'[scanner] {profile.name}: no dep files found, trying LLM inference…')
-        packages = _infer_packages_with_llm(profile, gh, all_files, llm)
+        try:
+            packages = _infer_packages_with_llm(profile, gh, all_files, llm)
+        except Exception as e:
+            profile._llm_scan_error = str(e)
+            print(f'[scanner] {profile.name}: LLM inference failed: {e}')
 
     language, frameworks = _detect_language(all_files, packages)
 
@@ -108,19 +113,17 @@ def _infer_packages_with_llm(profile: RepoProfile, gh: GithubClient,
         (f'\n\nREADME:\n{readme_content}' if readme_content else '')
     )
 
-    try:
-        response = llm.generate(system_prompt, user_prompt, max_tokens=800)
-        # Strip markdown fences if present
-        import re as _re
-        json_match = _re.search(r'\{.*\}', response, _re.DOTALL)
-        if json_match:
-            data = json.loads(json_match.group())
-            pkgs = {k: str(v) for k, v in data.get('packages', {}).items() if k}
-            if pkgs:
-                print(f'[scanner] {profile.name}: LLM inferred {len(pkgs)} packages')
-                return {'llm-inferred': pkgs}
-    except Exception as e:
-        print(f'[scanner] LLM inference failed: {e}')
+    # Let LLM/transport errors propagate so the caller can surface the reason.
+    response = llm.generate(system_prompt, user_prompt, max_tokens=800)
+    # Strip markdown fences if present
+    import re as _re
+    json_match = _re.search(r'\{.*\}', response, _re.DOTALL)
+    if json_match:
+        data = json.loads(json_match.group())
+        pkgs = {k: str(v) for k, v in data.get('packages', {}).items() if k}
+        if pkgs:
+            print(f'[scanner] {profile.name}: LLM inferred {len(pkgs)} packages')
+            return {'llm-inferred': pkgs}
     return {}
 
 
