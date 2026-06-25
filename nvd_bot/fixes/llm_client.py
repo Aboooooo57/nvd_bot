@@ -8,10 +8,9 @@ class LLMClient:
 
     def active_provider(self) -> str:
         """Return the provider that will actually be used, applying auto-detection."""
-        provider = config.get('llm_provider', 'openrouter')
-        if provider == 'openrouter' and not config.OPENROUTER_API_KEY and config.LITELLM_BASE_URL:
+        if not config.OPENROUTER_API_KEY and (config.LITELLM_BASE_URL or config.LITELLM_API_KEY):
             return 'litellm_proxy'
-        return provider
+        return config.get('llm_provider', 'openrouter')
 
     def generate(self, system_prompt: str, user_prompt: str,
                  max_tokens: int | None = None,
