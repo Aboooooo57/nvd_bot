@@ -115,3 +115,19 @@ class GithubClient:
             return r.json().get('html_url')
         print(f'[github] create_pr failed: {r.status_code} {r.text[:200]}')
         return None
+
+    def create_issue(self, owner: str, repo: str, title: str, body: str,
+                     labels: list[str] | None = None, token: str | None = None) -> str | None:
+        payload: dict = {'title': title, 'body': body}
+        if labels:
+            payload['labels'] = labels
+        r = requests.post(
+            f'{self._API}/repos/{owner}/{repo}/issues',
+            headers=self._headers(token),
+            json=payload,
+            timeout=20,
+        )
+        if r.status_code in (200, 201):
+            return r.json().get('html_url')
+        print(f'[github] create_issue failed: {r.status_code} {r.text[:200]}')
+        return None
