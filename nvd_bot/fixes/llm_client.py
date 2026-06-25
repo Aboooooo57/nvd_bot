@@ -32,7 +32,7 @@ class LLMClient:
             # litellm.completion() rewrites provider-prefixed model names (e.g.
             # strips gemini/ before forwarding), which breaks proxy key validation.
             import openai
-            base_url = config.LITELLM_BASE_URL or ''
+            base_url = (config.LITELLM_BASE_URL or '').rstrip('/')
             api_key = config.LITELLM_API_KEY or 'sk-placeholder'
             print(f'[llm] litellm_proxy: model="{model}" → {base_url}')
             client = openai.OpenAI(api_key=api_key, base_url=base_url)
