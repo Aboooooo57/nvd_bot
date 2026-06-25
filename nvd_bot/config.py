@@ -10,6 +10,8 @@ GITHUB_TOKEN: str | None = os.getenv('GITHUB_TOKEN')
 OPENROUTER_API_KEY: str | None = os.getenv('OPENROUTER_API_KEY')
 LITELLM_API_KEY: str | None = os.getenv('LITELLM_API_KEY')
 LITELLM_BASE_URL: str | None = os.getenv('LITELLM_BASE_URL')
+_owner_raw = os.getenv('TELEGRAM_OWNER_ID', '')
+TELEGRAM_OWNER_ID: int | None = int(_owner_raw) if _owner_raw.strip().isdigit() else None
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 DATA_DIR = 'data'
@@ -34,6 +36,7 @@ _DEFAULTS: dict = {
     'pr_branch_prefix': 'security/fix',
     'profile_file_path': '.nvd_bot/profile.json',
     'watchlist': ['python', 'node', 'linux', 'ubuntu', 'debian', 'fastapi', 'django', 'flask', 'express', 'spring'],
+    'allowed_user_ids': [],
 }
 
 _config: dict = {}
@@ -114,6 +117,33 @@ def remove_watchlist_keyword(word: str) -> bool:
             idx = lower.index(word.lower())
             kw.pop(idx)
             _config['watchlist'] = kw
+            try:
+                _save_unlocked()
+                return True
+            except Exception:
+                return False
+    return False
+
+
+def add_allowed_user(uid: int) -> bool:
+    with _lock:
+        users = _config.setdefault('allowed_user_ids', [])
+        if uid not in users:
+            users.append(uid)
+            try:
+                _save_unlocked()
+                return True
+            except Exception:
+                return False
+    return False
+
+
+def remove_allowed_user(uid: int) -> bool:
+    with _lock:
+        users = _config.get('allowed_user_ids', [])
+        if uid in users:
+            users.remove(uid)
+            _config['allowed_user_ids'] = users
             try:
                 _save_unlocked()
                 return True

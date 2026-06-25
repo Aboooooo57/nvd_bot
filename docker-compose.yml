@@ -11,6 +11,7 @@ services:
     environment:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - CHAT_ID=${CHAT_ID}
+      - TELEGRAM_OWNER_ID=${TELEGRAM_OWNER_ID}
       - NVD_API_KEY=${NVD_API_KEY}
       - GITHUB_TOKEN=${GITHUB_TOKEN}
       # LLM — pick ONE option:
