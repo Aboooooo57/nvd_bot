@@ -44,8 +44,13 @@ class LLMClient:
                 kwargs['api_key'] = config.LITELLM_API_KEY
             if config.LITELLM_BASE_URL:
                 kwargs['api_base'] = config.LITELLM_BASE_URL
-            kwargs['model'] = model
-            print(f'[llm] litellm_proxy: model="{model}" → {config.LITELLM_BASE_URL}')
+            # The LiteLLM SDK strips known provider prefixes (e.g. gemini/, anthropic/)
+            # before forwarding to the proxy. Prepend openai/ to force OpenAI-compatible
+            # protocol and pass the full model name through unchanged.
+            # e.g. openai/gemini/gemini-3.5-flash → proxy receives gemini/gemini-3.5-flash
+            proxy_model = model if model.startswith('openai/') else f'openai/{model}'
+            kwargs['model'] = proxy_model
+            print(f'[llm] litellm_proxy: model="{proxy_model}" → {config.LITELLM_BASE_URL}')
 
         try:
             response = litellm.completion(**kwargs)
