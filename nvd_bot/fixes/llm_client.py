@@ -28,20 +28,24 @@ class LLMClient:
         messages.append({'role': 'user', 'content': user_prompt})
 
         if provider == 'litellm_proxy':
-            # Use the OpenAI client directly so the model name is sent as-is.
-            # litellm.completion() rewrites provider-prefixed model names (e.g.
-            # strips gemini/ before forwarding), which breaks proxy key validation.
-            import openai
+            # Call the proxy with plain HTTP, mimicking a raw curl. The openai SDK
+            # attaches User-Agent + X-Stainless-* headers that the proxy's WAF blocks
+            # ("Your request was blocked"); curl/requests avoid them. See
+            # github.com/openai/openai-python/issues/2879. This also sends the model
+            # name as-is, so provider-prefixed names (gemini/...) are preserved.
+            import requests
             base_url = (config.LITELLM_BASE_URL or '').rstrip('/')
-            api_key = config.LITELLM_API_KEY or 'sk-placeholder'
-            print(f'[llm] litellm_proxy: model="{model}" → {base_url}')
-            client = openai.OpenAI(api_key=api_key, base_url=base_url)
-            response = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                max_tokens=max_tok,
-            )
-            return response.choices[0].message.content or ''
+            url = f'{base_url}/chat/completions'
+            headers = {'Content-Type': 'application/json'}
+            if config.LITELLM_API_KEY:
+                headers['Authorization'] = f'Bearer {config.LITELLM_API_KEY}'
+            payload = {'model': model, 'messages': messages, 'max_tokens': max_tok}
+            print(f'[llm] litellm_proxy: model="{model}" → {url}')
+            r = requests.post(url, headers=headers, json=payload, timeout=120)
+            if r.status_code != 200:
+                raise RuntimeError(f'litellm_proxy {r.status_code}: {r.text[:300]}')
+            data = r.json()
+            return data['choices'][0]['message'].get('content') or ''
 
         # OpenRouter (and any other litellm-routed provider)
         import litellm

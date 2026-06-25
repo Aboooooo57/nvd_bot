@@ -349,7 +349,7 @@ def _register_handlers():
             response = _llm.generate(
                 system_prompt='',
                 user_prompt='Reply with just the word OK',
-                max_tokens=10,
+                max_tokens=200,
                 model_override=model if is_override else None,
             )
             elapsed_ms = int((time.monotonic() - t0) * 1000)
