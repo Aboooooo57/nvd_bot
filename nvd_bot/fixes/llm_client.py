@@ -15,17 +15,23 @@ class LLMClient:
     def generate(self, system_prompt: str, user_prompt: str,
                  max_tokens: int | None = None,
                  model_override: str | None = None) -> str:
+        """Single-shot helper: build a 1-2 message list and return the reply."""
+        messages = []
+        if system_prompt:
+            messages.append({'role': 'system', 'content': system_prompt})
+        messages.append({'role': 'user', 'content': user_prompt})
+        return self.chat(messages, max_tokens=max_tokens, model_override=model_override)
+
+    def chat(self, messages: list[dict],
+             max_tokens: int | None = None,
+             model_override: str | None = None) -> str:
+        """Multi-turn completion: send a full message list, return the assistant text."""
         provider = self.active_provider()
         if provider != config.get('llm_provider', 'openrouter'):
             print('[llm] Auto-detected litellm_proxy (LITELLM_BASE_URL set, no OPENROUTER_API_KEY)')
 
         model = model_override or config.get('llm_model', 'openrouter/anthropic/claude-3-haiku')
         max_tok = max_tokens or config.get('llm_max_tokens', 2000)
-
-        messages = []
-        if system_prompt:
-            messages.append({'role': 'system', 'content': system_prompt})
-        messages.append({'role': 'user', 'content': user_prompt})
 
         if provider == 'litellm_proxy':
             # Call the proxy with plain HTTP, mimicking a raw curl. The openai SDK

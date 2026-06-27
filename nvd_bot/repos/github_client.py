@@ -48,7 +48,10 @@ class GithubClient:
         r = self._get(f'/repos/{owner}/{repo}/git/trees/HEAD',
                       token=token, params={'recursive': '1'})
         if r.status_code == 200:
-            return [item['path'] for item in r.json().get('tree', [])
+            data = r.json()
+            if data.get('truncated'):
+                print(f'[github] {owner}/{repo}: tree truncated — some paths may be missing')
+            return [item['path'] for item in data.get('tree', [])
                     if item.get('type') == 'blob']
         print(f'[github] list_files failed: {r.status_code}')
         return []

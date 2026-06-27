@@ -11,10 +11,14 @@ from nvd_bot.repos.github_client import GithubClient
 _DEP_FILES = [
     'requirements.txt',
     'requirements-dev.txt',
+    'requirements.in',
     'requirements/base.txt',
     'requirements/prod.txt',
     'setup.cfg',
+    'setup.py',
     'pyproject.toml',
+    'environment.yml',
+    'environment-linux.yml',
     'package.json',
     'go.mod',
     'Gemfile',
@@ -82,48 +86,89 @@ def scan_repo(profile: RepoProfile, gh: GithubClient, llm=None) -> dict:
     return packages
 
 
+_AGENT_MAX_STEPS = 6
+_AGENT_FILE_CAP = 4000   # max chars of a fetched file fed back to the model
+_AGENT_LIST_CAP = 150    # max file paths shown to the model
+
+_AGENT_SYSTEM_PROMPT = (
+    'You are a dependency-analyzer agent inspecting a source repository to determine the '
+    'external packages/libraries it depends on. You may request the contents of files to '
+    'investigate (dependency manifests, setup files, imports, docs).\n\n'
+    'Respond with EXACTLY ONE JSON object per turn, no extra text, in one of these forms:\n'
+    '  {"action": "read_file", "path": "<repo-relative path>"}\n'
+    '  {"action": "final", "packages": {"package-name": "version-or-unknown", ...}}\n\n'
+    'Inspect likely files (e.g. requirements*.txt, setup.py, pyproject.toml, '
+    'environment.yml, package.json, or a few source files for imports) before finalizing. '
+    'In the final answer include only real external dependencies — not standard-library '
+    'modules and not the project itself. Use "unknown" when you cannot determine a version.'
+)
+
+
 def _infer_packages_with_llm(profile: RepoProfile, gh: GithubClient,
                               all_files: list[str], llm) -> dict:
-    """Ask the LLM to infer dependencies from the repo file list + README."""
+    """Agentic inference: the LLM requests files in a loop until it reports dependencies."""
+    import re as _re
     owner, repo = _split_name(profile.name)
+    file_set = set(all_files)
 
-    # Prioritise likely-relevant files for context (cap at 80 paths)
-    file_sample = all_files[:80]
+    file_list = '\n'.join(all_files[:_AGENT_LIST_CAP])
+    if len(all_files) > _AGENT_LIST_CAP:
+        file_list += f'\n… ({len(all_files) - _AGENT_LIST_CAP} more files not shown)'
 
-    readme_content = ''
-    for readme_name in ('README.md', 'README.rst', 'README'):
-        if readme_name in all_files:
-            content = gh.get_file_content(owner, repo, readme_name, token=profile.github_token)
-            if content and len(content) < 3000:
-                readme_content = content[:3000]
+    messages = [
+        {'role': 'system', 'content': _AGENT_SYSTEM_PROMPT},
+        {'role': 'user', 'content': (
+            f'Repository: {profile.name}\n\n'
+            f'Files in repo:\n{file_list}\n\n'
+            'Determine the external dependencies. Request files as needed, then finalize.'
+        )},
+    ]
+
+    read_paths: set[str] = set()
+    for step in range(_AGENT_MAX_STEPS):
+        # Errors propagate so scan_repo can surface the reason.
+        response = llm.chat(messages, max_tokens=1000)
+        json_match = _re.search(r'\{.*\}', response, _re.DOTALL)
+        if not json_match:
+            print(f'[scanner] {profile.name}: agent step {step}: no JSON in reply, stopping')
             break
 
-    system_prompt = (
-        'You are a dependency analyzer. Given a list of files from a software repository, '
-        'identify what external packages/libraries this project depends on. '
-        'Return ONLY valid JSON in this exact format with no extra text: '
-        '{"packages": {"package-name": "version-or-unknown"}} '
-        'Use "unknown" for versions you cannot determine from the file list. '
-        'Only include real external dependencies — not standard library modules, '
-        'not the repo itself, not test utilities unless they are well-known packages.'
-    )
-    user_prompt = (
-        f'Repository: {profile.name}\n\n'
-        f'Files in repo:\n' + '\n'.join(file_sample) +
-        (f'\n\nREADME:\n{readme_content}' if readme_content else '')
-    )
+        try:
+            action = json.loads(json_match.group())
+        except Exception:
+            print(f'[scanner] {profile.name}: agent step {step}: bad JSON, stopping')
+            break
 
-    # Let LLM/transport errors propagate so the caller can surface the reason.
-    response = llm.generate(system_prompt, user_prompt, max_tokens=800)
-    # Strip markdown fences if present
-    import re as _re
-    json_match = _re.search(r'\{.*\}', response, _re.DOTALL)
-    if json_match:
-        data = json.loads(json_match.group())
-        pkgs = {k: str(v) for k, v in data.get('packages', {}).items() if k}
-        if pkgs:
-            print(f'[scanner] {profile.name}: LLM inferred {len(pkgs)} packages')
-            return {'llm-inferred': pkgs}
+        if action.get('action') == 'final':
+            pkgs = {k: str(v) for k, v in (action.get('packages') or {}).items() if k}
+            if pkgs:
+                print(f'[scanner] {profile.name}: agent inferred {len(pkgs)} packages '
+                      f'in {step + 1} step(s)')
+                return {'llm-inferred': pkgs}
+            return {}
+
+        if action.get('action') == 'read_file':
+            path = (action.get('path') or '').strip()
+            messages.append({'role': 'assistant', 'content': json_match.group()})
+            if path in read_paths:
+                feedback = f'(already provided {path}; please request a different file or finalize)'
+            elif path not in file_set:
+                feedback = f'(file not found: {path}; choose a path from the list or finalize)'
+            else:
+                read_paths.add(path)
+                content = gh.get_file_content(owner, repo, path, token=profile.github_token)
+                if not content:
+                    feedback = f'(file is empty or unreadable: {path})'
+                else:
+                    feedback = f'Contents of {path}:\n{content[:_AGENT_FILE_CAP]}'
+            messages.append({'role': 'user', 'content': feedback})
+            continue
+
+        # Unrecognized action
+        print(f'[scanner] {profile.name}: agent step {step}: unknown action, stopping')
+        break
+
+    print(f'[scanner] {profile.name}: agent did not finalize within {_AGENT_MAX_STEPS} steps')
     return {}
 
 
@@ -153,8 +198,12 @@ def _parse_file(filename: str, content: str) -> dict[str, str]:
         return _parse_requirements(content)
     if filename == 'setup.cfg':
         return _parse_setup_cfg(content)
+    if filename == 'setup.py':
+        return _parse_setup_py(content)
     if filename == 'pyproject.toml':
         return _parse_pyproject_toml(content)
+    if 'environment' in filename and filename.endswith(('.yml', '.yaml')):
+        return _parse_conda_yml(content)
     if filename == 'package.json':
         return _parse_package_json(content)
     if filename == 'go.mod':
@@ -164,6 +213,60 @@ def _parse_file(filename: str, content: str) -> dict[str, str]:
     if filename == 'Pipfile':
         return _parse_pipfile(content)
     return {}
+
+
+def _parse_setup_py(content: str) -> dict[str, str]:
+    """Extract install_requires entries from setup.py."""
+    result: dict[str, str] = {}
+    for m in re.finditer(r'install_requires\s*=\s*\[(.*?)\]', content, re.DOTALL):
+        # Each requirement is a quoted string, e.g. "aiohttp==3.8.1", 'web3>=6'
+        for req in re.findall(r'''['"]([^'"]+)['"]''', m.group(1)):
+            result.update(_parse_requirements(req))
+    return result
+
+
+def _parse_conda_yml(content: str) -> dict[str, str]:
+    """Parse a conda environment.yml dependencies list, including a nested pip: block."""
+    result: dict[str, str] = {}
+    skip = {'python', 'pip', 'nodejs', 'node', 'setuptools', 'wheel', 'cython', 'conda'}
+    in_deps = False
+    in_pip = False
+    deps_indent = None
+    for raw in content.splitlines():
+        line = raw.rstrip()
+        if not line or line.lstrip().startswith('#'):
+            continue
+        stripped = line.strip()
+        indent = len(line) - len(line.lstrip())
+
+        if stripped.rstrip(':') == 'dependencies' and stripped.endswith(':'):
+            in_deps = True
+            in_pip = False
+            deps_indent = indent
+            continue
+        if in_deps:
+            # A new top-level key at or below the dependencies indent ends the block
+            if indent <= (deps_indent or 0) and not stripped.startswith('-'):
+                break
+            if not stripped.startswith('-'):
+                continue
+            item = stripped[1:].strip()
+            if item.rstrip(':') == 'pip' and item.endswith(':'):
+                in_pip = True
+                continue
+            # pip sub-items are more deeply indented "- pkg==ver"
+            name_spec = item
+            m = re.match(r'^([A-Za-z0-9_.\-]+)\s*([=<>!~].*)?$', name_spec)
+            if not m:
+                in_pip = in_pip and indent > (deps_indent or 0) + 2
+                continue
+            pkg = m.group(1).lower().replace('_', '-')
+            if pkg in skip:
+                continue
+            ver_spec = (m.group(2) or '').strip()
+            pin = re.search(r'==?\s*([\d][^\s,;]*)', ver_spec)
+            result[pkg] = pin.group(1) if pin else (ver_spec.lstrip('=<>!~') or 'unknown')
+    return result
 
 
 def _parse_requirements(content: str) -> dict[str, str]:
