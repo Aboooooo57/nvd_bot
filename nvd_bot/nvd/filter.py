@@ -25,6 +25,17 @@ CPE_TO_PACKAGE: dict[str, str] = {
     'apache:log4j': 'log4j',
 }
 
+# Generic CPE product names that are too broad to match a real dependency.
+# These produce huge false-positive floods, so we ignore them unless they are
+# explicitly mapped in CPE_TO_PACKAGE above.
+_GENERIC_CPE_PRODUCTS: set[str] = {
+    'json', 'http', 'https', 'core', 'util', 'utils', 'common', 'commons',
+    'server', 'client', 'api', 'app', 'web', 'io', 'net', 'lib', 'library',
+    'framework', 'module', 'modules', 'plugin', 'plugins', 'cli', 'sdk',
+    'tool', 'tools', 'data', 'db', 'test', 'tests', 'demo', 'example',
+    'examples', 'main', 'config', 'auth', 'admin', 'console', 'service',
+}
+
 
 def is_relevant_to_watchlist(description: str) -> bool:
     """Check if description matches any watchlist keyword (fallback filter)."""
@@ -90,6 +101,9 @@ def _package_from_cpe(criteria: str) -> str | None:
     key = f'{vendor}:{product}'
     if key in CPE_TO_PACKAGE:
         return CPE_TO_PACKAGE[key]
+    # Drop generic / too-short product names — they match unrelated packages
+    if product in _GENERIC_CPE_PRODUCTS or len(product) <= 2:
+        return None
     # Fallback: use product name directly, normalize underscores→hyphens
     return product.replace('_', '-')
 

@@ -26,7 +26,7 @@ _DEFAULTS: dict = {
     'nvd_poll_interval_minutes': 5,
     'commit_poll_interval_minutes': 15,
     'daily_summary_time': '23:55',
-    'severity_threshold': 'LOW',
+    'severity_threshold': 'MEDIUM',
     'cve_lookback_minutes': 6,
     'seen_cve_limit': 1000,
     'llm_provider': 'openrouter',

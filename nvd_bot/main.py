@@ -64,6 +64,15 @@ def _save_seen(cve_id: str):
 
 # ── Core CVE processing pipeline ──────────────────────────────────────────────
 
+_SEVERITY_RANK = {'LOW': 1, 'MEDIUM': 2, 'HIGH': 3, 'CRITICAL': 4}
+
+
+def _meets_threshold(severity: str) -> bool:
+    """True if the CVE severity is at or above the configured threshold."""
+    thr = config.get('severity_threshold', 'MEDIUM')
+    return _SEVERITY_RANK.get((severity or '').upper(), 0) >= _SEVERITY_RANK.get(thr.upper(), 2)
+
+
 def process_cve(cve_item: dict, registry: RepoRegistry,
                 pending: PendingFixStore, gh: GithubClient, llm: LLMClient):
     from concurrent.futures import ThreadPoolExecutor
@@ -102,8 +111,11 @@ def process_cve(cve_item: dict, registry: RepoRegistry,
 
     print(f'[main] {cve_id} ({severity}): {len(matches)} repo match(es)')
 
-    # Create GitHub issues for each matching repo (non-blocking)
-    if matches:
+    # Create GitHub issues for each matching repo (non-blocking), gated by severity
+    if matches and not _meets_threshold(severity):
+        print(f'[main] {cve_id}: {len(matches)} match(es) below severity threshold '
+              f'({config.get("severity_threshold", "MEDIUM")}) — no issue created')
+    elif matches:
         executor = ThreadPoolExecutor(max_workers=2)
         for match in matches:
             executor.submit(_handle_match, match, cve_item, gh)
