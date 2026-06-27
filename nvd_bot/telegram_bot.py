@@ -572,8 +572,11 @@ def _pkg_summary(profile) -> str:
         if err:
             return f'no dep files found, and LLM inference failed: {err[:200]}'
         return 'no dependency files found (LLM inference found nothing either)'
-    is_llm = 'llm-inferred' in profile.packages
-    suffix = ' (LLM-inferred — verify manually)' if is_llm else ''
+    suffix = ''
+    if 'llm-inferred' in profile.packages:
+        suffix = ' (LLM-inferred — verify manually)'
+    elif 'import-scan' in profile.packages:
+        suffix = ' (from source imports — versions unknown, verify manually)'
     return f'{count} packages found{suffix}'
 
 

@@ -62,15 +62,27 @@ def scan_repo(profile: RepoProfile, gh: GithubClient, llm=None) -> dict:
                 packages[matched_path] = parsed
                 print(f'[scanner] {profile.name}: parsed {matched_path} ({len(parsed)} packages)')
 
-    # LLM fallback: if no dep files found, ask the LLM to infer packages from file list
+    # Fallback for repos without standard manifests: discover dependencies
+    # dynamically from the source code's imports, then (if available) let the
+    # LLM agent confirm package names and find versions.
     profile._llm_scan_error = None  # transient; not serialised by to_dict()
-    if not packages and llm:
-        print(f'[scanner] {profile.name}: no dep files found, trying LLM inference…')
-        try:
-            packages = _infer_packages_with_llm(profile, gh, all_files, llm)
-        except Exception as e:
-            profile._llm_scan_error = str(e)
-            print(f'[scanner] {profile.name}: LLM inference failed: {e}')
+    if not packages:
+        print(f'[scanner] {profile.name}: no dep files found, scanning source imports…')
+        import_pkgs = _scan_source_imports(profile, gh, all_files)
+        if import_pkgs:
+            print(f'[scanner] {profile.name}: import scan found {len(import_pkgs)} modules')
+        if llm:
+            try:
+                inferred = _infer_packages_with_llm(profile, gh, all_files, llm,
+                                                    import_hints=import_pkgs)
+                if inferred:
+                    packages = inferred
+            except Exception as e:
+                profile._llm_scan_error = str(e)
+                print(f'[scanner] {profile.name}: LLM inference failed: {e}')
+        # If the LLM produced nothing, fall back to the raw import-scan results
+        if not packages and import_pkgs:
+            packages = {'import-scan': import_pkgs}
 
     language, frameworks = _detect_language(all_files, packages)
 
@@ -84,6 +96,74 @@ def scan_repo(profile: RepoProfile, gh: GithubClient, llm=None) -> dict:
     _push_profile(profile, gh, owner, repo)
 
     return packages
+
+
+import sys as _sys
+
+# Python standard-library module names (approximated from the running interpreter)
+# plus a few common builtins not always listed. Used to exclude stdlib imports.
+_PY_STDLIB: set[str] = set(getattr(_sys, 'stdlib_module_names', set())) | {
+    '__future__', 'typing_extensions', 'dataclasses', 'asyncio', 'concurrent',
+}
+
+# import name → PyPI distribution name, for the common cases where they differ
+_IMPORT_TO_PACKAGE: dict[str, str] = {
+    'cv2': 'opencv-python', 'yaml': 'pyyaml', 'pil': 'pillow', 'sklearn': 'scikit-learn',
+    'bs4': 'beautifulsoup4', 'dotenv': 'python-dotenv', 'jose': 'python-jose',
+    'dateutil': 'python-dateutil', 'attr': 'attrs', 'google': 'google-api-python-client',
+    'serial': 'pyserial', 'usb': 'pyusb', 'cryptography': 'cryptography', 'jwt': 'pyjwt',
+    'redis': 'redis', 'psycopg2': 'psycopg2-binary', 'mysql': 'mysql-connector-python',
+    'web3': 'web3', 'eth_account': 'eth-account', 'eth_utils': 'eth-utils',
+    'telebot': 'pytelegrambotapi', 'telegram': 'python-telegram-bot', 'magic': 'python-magic',
+    'OpenSSL': 'pyopenssl', 'win32api': 'pywin32', 'zmq': 'pyzmq', 'skimage': 'scikit-image',
+}
+
+_SOURCE_IMPORT_MAX_FILES = 50  # cap GitHub fetches during import scanning
+
+
+def _scan_source_imports(profile: RepoProfile, gh: GithubClient,
+                         all_files: list[str]) -> dict[str, str]:
+    """Discover third-party packages by reading import statements in source code.
+
+    Versions can't be derived from imports, so all are 'unknown'. Local/first-party
+    modules and the standard library are filtered out.
+    """
+    owner, repo = _split_name(profile.name)
+
+    py_files = [f for f in all_files if f.endswith('.py')]
+    # Prefer shallow paths / likely entrypoints first
+    py_files.sort(key=lambda p: (p.count('/'), len(p)))
+    py_files = py_files[:_SOURCE_IMPORT_MAX_FILES]
+    if not py_files:
+        return {}
+
+    # First-party module names: top-level dirs and .py file stems in the repo
+    local: set[str] = set()
+    for f in all_files:
+        parts = f.split('/')
+        if len(parts) > 1:
+            local.add(parts[0])
+        if f.endswith('.py'):
+            local.add(parts[-1][:-3])
+
+    import_re = re.compile(r'^\s*(?:import|from)\s+([a-zA-Z0-9_]+)', re.MULTILINE)
+    modules: set[str] = set()
+    for f in py_files:
+        content = gh.get_file_content(owner, repo, f, token=profile.github_token)
+        if not content:
+            continue
+        for m in import_re.finditer(content):
+            modules.add(m.group(1))
+
+    result: dict[str, str] = {}
+    for mod in modules:
+        if not mod or mod.startswith('_'):
+            continue
+        if mod in _PY_STDLIB or mod in local:
+            continue
+        pkg = _IMPORT_TO_PACKAGE.get(mod, mod).lower().replace('_', '-')
+        result[pkg] = 'unknown'
+    return result
 
 
 _AGENT_MAX_STEPS = 6
@@ -105,7 +185,8 @@ _AGENT_SYSTEM_PROMPT = (
 
 
 def _infer_packages_with_llm(profile: RepoProfile, gh: GithubClient,
-                              all_files: list[str], llm) -> dict:
+                              all_files: list[str], llm,
+                              import_hints: dict[str, str] | None = None) -> dict:
     """Agentic inference: the LLM requests files in a loop until it reports dependencies."""
     import re as _re
     owner, repo = _split_name(profile.name)
@@ -115,11 +196,21 @@ def _infer_packages_with_llm(profile: RepoProfile, gh: GithubClient,
     if len(all_files) > _AGENT_LIST_CAP:
         file_list += f'\n… ({len(all_files) - _AGENT_LIST_CAP} more files not shown)'
 
+    hint_block = ''
+    if import_hints:
+        hint_block = (
+            '\n\nThird-party modules detected in the source imports (names may need '
+            'mapping to real package names, versions unknown):\n'
+            + ', '.join(sorted(import_hints)) +
+            '\nUse these as a starting point; confirm names and find versions from '
+            'manifest/lock files where possible.'
+        )
+
     messages = [
         {'role': 'system', 'content': _AGENT_SYSTEM_PROMPT},
         {'role': 'user', 'content': (
             f'Repository: {profile.name}\n\n'
-            f'Files in repo:\n{file_list}\n\n'
+            f'Files in repo:\n{file_list}{hint_block}\n\n'
             'Determine the external dependencies. Request files as needed, then finalize.'
         )},
     ]
