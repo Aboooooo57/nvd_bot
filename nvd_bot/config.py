@@ -32,7 +32,7 @@ _DEFAULTS: dict = {
     'cve_lookback_minutes': 6,
     'seen_cve_limit': 1000,
     'llm_provider': 'openrouter',
-    'llm_model': 'openrouter/anthropic/claude-3-haiku',
+    'llm_model': 'gemini-3.5-flash',
     'llm_max_tokens': 2000,
     'pr_base_branch': 'main',
     'pr_branch_prefix': 'security/fix',
