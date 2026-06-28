@@ -19,6 +19,7 @@ from nvd_bot.fixes.llm_client import LLMClient
 from nvd_bot.matching.matcher import match_cve_to_repos
 from nvd_bot import telegram_bot as tgbot
 from nvd_bot.scheduler import poll_commits
+from nvd_bot.repos.git_account_store import GitAccountStore
 
 # In-memory daily alert list
 _daily_alerts: list[dict] = []
@@ -203,9 +204,10 @@ def main():
     pending = PendingFixStore()
     gh = GithubClient()
     llm = LLMClient()
+    git_store = GitAccountStore()
 
     # Init and start Telegram bot polling in background thread
-    bot = tgbot.init(registry, pending, gh, llm)
+    bot = tgbot.init(registry, pending, gh, llm, git_store)
     threading.Thread(
         target=lambda: bot.infinity_polling(none_stop=True, timeout=60),
         daemon=True,
