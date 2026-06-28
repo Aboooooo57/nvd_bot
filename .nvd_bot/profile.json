@@ -1,0 +1,26 @@
+{
+  "id": "aboooooo57-nvd-bot-44fc6b",
+  "url": "https://github.com/Aboooooo57/nvd_bot",
+  "name": "Aboooooo57/nvd_bot",
+  "language": "python",
+  "frameworks": [],
+  "packages": {
+    "requirements.txt": {
+      "certifi": "2025.11.12",
+      "charset-normalizer": "3.4.4",
+      "idna": "3.11",
+      "pytelegrambotapi": "4.29.1",
+      "requests": "2.32.5",
+      "schedule": "1.2.2",
+      "urllib3": "2.6.2",
+      "litellm": ">=1.40.0",
+      "packaging": ">=24.0"
+    }
+  },
+  "last_commit_sha": null,
+  "last_scanned_at": "2026-06-28T09:15:52.656542+00:00",
+  "active_fixes": [],
+  "enabled": true,
+  "auto_pr": false,
+  "overrides": {}
+}
