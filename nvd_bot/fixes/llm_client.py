@@ -49,7 +49,18 @@ class LLMClient:
             print(f'[llm] litellm_proxy: model="{model}" → {url}')
             r = requests.post(url, headers=headers, json=payload, timeout=120)
             if r.status_code != 200:
-                raise RuntimeError(f'litellm_proxy {r.status_code}: {r.text[:300]}')
+                try:
+                    err_obj = r.json().get('error', {})
+                    err_type = err_obj.get('type', '')
+                    err_msg  = err_obj.get('message', r.text[:200])
+                except Exception:
+                    err_type, err_msg = '', r.text[:200]
+                if err_type == 'expired_key':
+                    raise RuntimeError(
+                        'LiteLLM Key Expired — generate a new key in the LiteLLM '
+                        'admin panel and update LITELLM_API_KEY in your .env'
+                    )
+                raise RuntimeError(f'litellm_proxy {r.status_code}: {err_msg}')
             data = r.json()
             return data['choices'][0]['message'].get('content') or ''
 
