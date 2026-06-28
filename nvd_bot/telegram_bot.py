@@ -166,14 +166,21 @@ def _register_handlers():
         if not _authorized(msg): return
         parts = msg.text.split()
         if len(parts) < 2:
-            send('Usage: /removerepo &lt;repo-id&gt;')
+            repos = _registry.list_repos()
+            if not repos:
+                send('No Repos Tracked Yet. Use /addrepo to add one.')
+                return
+            kb = InlineKeyboardMarkup()
+            for i, p in enumerate(repos):
+                kb.add(InlineKeyboardButton(f'🗑 {p.name}', callback_data=f'adm:rm:{i}'))
+            send('<b>Select Repo to Remove:</b>', reply_markup=kb)
             return
         repo_id = parts[1].strip()
         ok = _registry.remove_repo(repo_id)
         if ok:
-            send(f'✅ Repo <code>{repo_id}</code> removed.')
+            send(f'✅ Repo <code>{repo_id}</code> Removed.')
         else:
-            send(f'❌ Repo ID <code>{repo_id}</code> not found.')
+            send(f'❌ Repo ID <code>{repo_id}</code> Not Found.')
 
     # ── /listrepos ────────────────────────────────────────────────────────────
     @bot.message_handler(commands=['listrepos'])
@@ -201,12 +208,19 @@ def _register_handlers():
         if not _authorized(msg): return
         parts = msg.text.split()
         if len(parts) < 2:
-            send('Usage: /scanrepo &lt;repo-id&gt;')
+            repos = _registry.list_repos()
+            if not repos:
+                send('No Repos Tracked Yet. Use /addrepo to add one.')
+                return
+            kb = InlineKeyboardMarkup()
+            for i, p in enumerate(repos):
+                kb.add(InlineKeyboardButton(f'🔄 {p.name}', callback_data=f'adm:sc:{i}'))
+            send('<b>Select Repo to Scan:</b>', reply_markup=kb)
             return
         repo_id = parts[1].strip()
         profile = _registry.get_repo(repo_id)
         if not profile:
-            send(f'❌ Repo <code>{repo_id}</code> not found.')
+            send(f'❌ Repo <code>{repo_id}</code> Not Found.')
             return
         send(f'🔄 Scanning <b>{html.escape(profile.name)}</b>…')
         _executor.submit(_scan_task, profile)
@@ -302,14 +316,21 @@ def _register_handlers():
         if not _authorized(msg): return
         parts = msg.text.split(maxsplit=1)
         if len(parts) < 2:
-            send('Usage: /removekeyword &lt;word&gt;')
+            kws = config.get('watchlist', [])
+            if not kws:
+                send('Watchlist Is Empty.')
+                return
+            kb = InlineKeyboardMarkup()
+            for i, kw in enumerate(kws):
+                kb.add(InlineKeyboardButton(f'❌ {kw}', callback_data=f'adm:rmkw:{i}'))
+            send('<b>Select Keyword to Remove:</b>', reply_markup=kb)
             return
         word = parts[1].strip().lower()
         ok = config.remove_watchlist_keyword(word)
         if ok:
-            send(f'✅ Removed keyword: <code>{html.escape(word)}</code>')
+            send(f'✅ Keyword Removed: <code>{html.escape(word)}</code>')
         else:
-            send(f'❌ Keyword not found: <code>{html.escape(word)}</code>')
+            send(f'❌ Keyword Not Found: <code>{html.escape(word)}</code>')
 
     # ── /setrepo ──────────────────────────────────────────────────────────────
     @bot.message_handler(commands=['setrepo'])
@@ -428,14 +449,21 @@ def _register_handlers():
             return
         parts = msg.text.split()
         if len(parts) < 2 or not parts[1].isdigit():
-            send('Usage: /removeuser &lt;telegram-user-id&gt;')
+            users = config.get('allowed_user_ids', [])
+            if not users:
+                send('No Additional Users In Allowlist.')
+                return
+            kb = InlineKeyboardMarkup()
+            for u in users:
+                kb.add(InlineKeyboardButton(f'❌ User {u}', callback_data=f'adm:rmu:{u}'))
+            send('<b>Select User to Remove:</b>', reply_markup=kb)
             return
         uid = int(parts[1])
         ok = config.remove_allowed_user(uid)
         if ok:
-            send(f'✅ User <code>{uid}</code> removed from allowlist.')
+            send(f'✅ User <code>{uid}</code> Removed From Allowlist.')
         else:
-            send(f'❌ User <code>{uid}</code> not found in allowlist.')
+            send(f'❌ User <code>{uid}</code> Not Found In Allowlist.')
 
     # ── /help ─────────────────────────────────────────────────────────────────
     @bot.message_handler(commands=['help', 'start'])
@@ -561,36 +589,41 @@ def _register_handlers():
         uid = msg.from_user.id
         parts = msg.text.split()
         if len(parts) < 2 or not parts[1].isdigit():
-            send('Usage: /disconnectgit &lt;index&gt;\nSee /gitaccounts for indices.')
+            _show_gitaccounts(uid)
             return
         idx = int(parts[1])
         ok = _git_store.remove_account(uid, idx)
         if ok:
-            send(f'✅ Account #{idx} disconnected.')
+            send(f'✅ Account #{idx} Disconnected.')
         else:
-            send(f'❌ Account #{idx} not found. Use /gitaccounts to see your accounts.')
+            send(f'❌ Account #{idx} Not Found.')
 
     # ── /gitaccounts ──────────────────────────────────────────────────────────
     @bot.message_handler(commands=['gitaccounts'])
     def cmd_gitaccounts(msg: Message):
         if not _authorized(msg): return
         uid = msg.from_user.id
+        _show_gitaccounts(uid)
+
+    def _show_gitaccounts(uid: int):
         accounts = _git_store.list_accounts(uid)
         if not accounts:
-            send('No git accounts connected. Use /connectgit &lt;github|gitlab&gt; to add one.')
+            kb = InlineKeyboardMarkup()
+            kb.add(InlineKeyboardButton('➕ Connect Account', callback_data='gh:cg:pick'))
+            send('No Git Accounts Connected.', reply_markup=kb)
             return
-        lines = ['<b>Your Connected Git Accounts</b>\n']
+        lines = ['<b>Connected Git Accounts</b>\n']
         for acc in accounts:
             icon = _GIT_ICONS.get(acc['type'], '🔗')
             host = acc['base_url']
-            if host in ('https://github.com', 'https://gitlab.com'):
-                host = ''
-            else:
-                host = f' ({html.escape(host)})'
-            lines.append(f'{icon} [{acc["idx"]}] <b>{html.escape(acc["username"])}</b>'
-                         f' — {acc["type"].title()}{host}')
-        lines.append('\nUse /disconnectgit &lt;index&gt; to remove one.')
-        send('\n'.join(lines))
+            host_str = '' if host in ('https://github.com', 'https://gitlab.com') else f' ({html.escape(host)})'
+            lines.append(f'{icon} <b>{html.escape(acc["username"])}</b> — {acc["type"].title()}{host_str}')
+        kb = InlineKeyboardMarkup()
+        for acc in accounts:
+            icon = _GIT_ICONS.get(acc['type'], '🔗')
+            label = f'❌ Disconnect {icon} {acc["username"]}'
+            kb.add(InlineKeyboardButton(label, callback_data=f'gh:rmac:{acc["idx"]}'))
+        send('\n'.join(lines), reply_markup=kb)
 
     # ── /myrepos ──────────────────────────────────────────────────────────────
     @bot.message_handler(commands=['myrepos'])
@@ -619,7 +652,14 @@ def _register_handlers():
         uid = msg.from_user.id
         parts = msg.text.split(maxsplit=1)
         if len(parts) < 2:
-            send('Usage: /issues &lt;repo-id&gt;\nGet the repo ID from /listrepos.')
+            repos = _registry.list_repos()
+            if not repos:
+                send('No Repos Tracked Yet. Use /addrepo to add one.')
+                return
+            kb = InlineKeyboardMarkup()
+            for i, p in enumerate(repos):
+                kb.add(InlineKeyboardButton(f'🐛 {p.name}', callback_data=f'adm:iss:{i}'))
+            send('<b>Select Repo to View Issues:</b>', reply_markup=kb)
             return
         profile = _registry.get_repo(parts[1].strip())
         if not profile:
@@ -655,7 +695,19 @@ def _register_handlers():
 
         elif action == 'cg':
             choice = parts[2] if len(parts) > 2 else ''
-            if choice == 'gh':
+            if choice == 'pick':
+                kb = InlineKeyboardMarkup()
+                kb.row(
+                    InlineKeyboardButton('🐙 GitHub', callback_data='gh:cg:gh'),
+                    InlineKeyboardButton('🦊 GitLab', callback_data='gh:cg:gl'),
+                )
+                kb.row(
+                    InlineKeyboardButton('⚙️ GitHub Enterprise', callback_data='gh:cg:ghe'),
+                    InlineKeyboardButton('⚙️ GitLab Self-hosted', callback_data='gh:cg:gls'),
+                )
+                bot.edit_message_text('<b>Connect a Git Account</b>\n\nChoose a Provider:',
+                                      config.CHAT_ID, mid, reply_markup=kb, parse_mode='HTML')
+            elif choice == 'gh':
                 bot.edit_message_text('<b>Connect GitHub</b>\n\n🔄 Starting…',
                                       config.CHAT_ID, mid, parse_mode='HTML')
                 _executor.submit(_start_connect_flow, uid, 'github', 'https://github.com')
@@ -669,8 +721,16 @@ def _register_handlers():
                            else 'https://gitlab.mycompany.com')
                 _awaiting_url[uid] = {'provider_type': provider_type}
                 bot.edit_message_text(
-                    f'Enter your self-hosted URL:\n<code>{html.escape(example)}</code>',
+                    f'Enter Your Self-Hosted URL:\n<code>{html.escape(example)}</code>',
                     config.CHAT_ID, mid, parse_mode='HTML')
+
+        elif action == 'rmac':
+            idx = int(parts[2])
+            ok = _git_store.remove_account(uid, idx)
+            if ok:
+                bot.edit_message_text('✅ Account Disconnected.', config.CHAT_ID, mid, parse_mode='HTML')
+            else:
+                bot.edit_message_text('❌ Account Not Found.', config.CHAT_ID, mid, parse_mode='HTML')
 
         elif action == 'acc':
             acc_idx = int(parts[2])
@@ -769,6 +829,93 @@ def _register_handlers():
                 _fetch_and_show_issues, uid, ctx['provider'],
                 ctx['owner'], ctx['repo'], ctx['token'], ctx.get('gh_page', 1), mid,
             )
+
+    # ── adm:* callback handler ────────────────────────────────────────────────
+    @bot.callback_query_handler(func=lambda call: call.data.startswith('adm:'))
+    def handle_adm_callback(call: CallbackQuery):
+        if not _authorized(call):
+            bot.answer_callback_query(call.id, 'Unauthorized.')
+            return
+        bot.answer_callback_query(call.id)
+        uid = call.from_user.id
+        parts = call.data.split(':')
+        action = parts[1] if len(parts) > 1 else ''
+        mid = call.message.message_id
+
+        if action == 'rm':
+            idx = int(parts[2])
+            repos = _registry.list_repos()
+            if idx >= len(repos):
+                bot.edit_message_text('❌ Repo Not Found.', config.CHAT_ID, mid, parse_mode='HTML')
+                return
+            profile = repos[idx]
+            ok = _registry.remove_repo(profile.id)
+            if ok:
+                bot.edit_message_text(
+                    f'✅ <b>{html.escape(profile.name)}</b> Removed.',
+                    config.CHAT_ID, mid, parse_mode='HTML')
+            else:
+                bot.edit_message_text('❌ Could Not Remove Repo.', config.CHAT_ID, mid, parse_mode='HTML')
+
+        elif action == 'sc':
+            idx = int(parts[2])
+            repos = _registry.list_repos()
+            if idx >= len(repos):
+                bot.edit_message_text('❌ Repo Not Found.', config.CHAT_ID, mid, parse_mode='HTML')
+                return
+            profile = repos[idx]
+            bot.edit_message_text(
+                f'🔄 Scanning <b>{html.escape(profile.name)}</b>…',
+                config.CHAT_ID, mid, parse_mode='HTML')
+            _executor.submit(_scan_task, profile)
+
+        elif action == 'rmkw':
+            idx = int(parts[2])
+            kws = config.get('watchlist', [])
+            if idx >= len(kws):
+                bot.edit_message_text('❌ Keyword Not Found.', config.CHAT_ID, mid, parse_mode='HTML')
+                return
+            kw = kws[idx]
+            config.remove_watchlist_keyword(kw)
+            bot.edit_message_text(
+                f'✅ Keyword Removed: <code>{html.escape(kw)}</code>',
+                config.CHAT_ID, mid, parse_mode='HTML')
+
+        elif action == 'rmu':
+            target_uid = int(parts[2])
+            ok = config.remove_allowed_user(target_uid)
+            if ok:
+                bot.edit_message_text(
+                    f'✅ User <code>{target_uid}</code> Removed From Allowlist.',
+                    config.CHAT_ID, mid, parse_mode='HTML')
+            else:
+                bot.edit_message_text(
+                    f'❌ User <code>{target_uid}</code> Not Found.',
+                    config.CHAT_ID, mid, parse_mode='HTML')
+
+        elif action == 'iss':
+            idx = int(parts[2])
+            repos = _registry.list_repos()
+            if idx >= len(repos):
+                bot.edit_message_text('❌ Repo Not Found.', config.CHAT_ID, mid, parse_mode='HTML')
+                return
+            profile = repos[idx]
+            from nvd_bot.repos.git_providers import make_provider, detect_provider_from_url
+            provider_type, base_url = detect_provider_from_url(profile.url)
+            acc = _git_store.find_account_for_host(uid, provider_type, base_url)
+            token = (acc['token'] if acc else profile.github_token or config.GITHUB_TOKEN)
+            if not token:
+                bot.edit_message_text(
+                    '❌ No Token For This Repo. Connect your account with /connectgit first.',
+                    config.CHAT_ID, mid, parse_mode='HTML')
+                return
+            owner, repo_name = (profile.name.split('/', 1) if '/' in profile.name
+                                else ('', profile.name))
+            provider = make_provider(provider_type, base_url)
+            bot.edit_message_text(
+                f'🔄 Fetching Issues For <b>{html.escape(profile.name)}</b>…',
+                config.CHAT_ID, mid, parse_mode='HTML')
+            _executor.submit(_fetch_and_show_issues, uid, provider, owner, repo_name, token, 1, None)
 
     # ── Inline keyboard callbacks ─────────────────────────────────────────────
     @bot.callback_query_handler(func=lambda call: call.data.startswith('fix:'))
