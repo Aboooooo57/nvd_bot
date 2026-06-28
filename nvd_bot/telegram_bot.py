@@ -30,6 +30,7 @@ _git_store: GitAccountStore = None
 
 # Per-user git browsing state (in-memory, non-persistent)
 _awaiting_token: dict[int, dict] = {}   # uid → {provider_type, base_url}
+_awaiting_url: dict[int, dict] = {}     # uid → {provider_type} — waiting for self-hosted URL
 _user_repo_cache: dict[int, dict] = {}  # uid → {acc_idx, gh_page, repos, has_more}
 _user_issue_ctx: dict[int, dict] = {}   # uid → {provider, owner, repo, token, issues, gh_page, has_more}
 
@@ -506,20 +507,44 @@ def _register_handlers():
             f'{html.escape(ctx["base_url"])}!\n\nUse /myrepos to browse your repositories.'
         )
 
+    # ── Self-hosted URL paste handler ─────────────────────────────────────────
+    @bot.message_handler(
+        func=lambda m: (m.from_user and m.from_user.id in _awaiting_url
+                        and m.text and not m.text.startswith('/'))
+    )
+    def handle_url_paste(msg: Message):
+        if not _authorized(msg):
+            return
+        uid = msg.from_user.id
+        ctx = _awaiting_url.pop(uid, None)
+        if not ctx:
+            return
+        raw = msg.text.strip()
+        if not raw.startswith('http'):
+            _awaiting_url[uid] = ctx
+            send('❌ Please enter a valid URL starting with <code>https://</code>')
+            return
+        _start_connect_flow(uid, ctx['provider_type'], raw.rstrip('/'))
+
     # ── /connectgit ───────────────────────────────────────────────────────────
     @bot.message_handler(commands=['connectgit'])
     def cmd_connectgit(msg: Message):
         if not _authorized(msg): return
         parts = msg.text.split(maxsplit=2)
+        uid = msg.from_user.id
         if len(parts) < 2:
-            send(
-                'Usage: /connectgit &lt;type&gt; [base_url]\n\n'
-                'Examples:\n'
-                '/connectgit github\n'
-                '/connectgit gitlab\n'
-                '/connectgit github https://github.mycompany.com\n'
-                '/connectgit gitlab https://gitlab.mycompany.com'
+            # Show provider picker keyboard
+            kb = InlineKeyboardMarkup()
+            kb.row(
+                InlineKeyboardButton('🐙 GitHub', callback_data='gh:cg:gh'),
+                InlineKeyboardButton('🦊 GitLab', callback_data='gh:cg:gl'),
             )
+            kb.row(
+                InlineKeyboardButton('⚙️ GitHub Enterprise', callback_data='gh:cg:ghe'),
+                InlineKeyboardButton('⚙️ GitLab Self-hosted', callback_data='gh:cg:gls'),
+            )
+            bot.send_message(config.CHAT_ID, '<b>Connect a Git account</b>\n\nChoose a provider:',
+                             reply_markup=kb, parse_mode='HTML')
             return
         provider_type = parts[1].strip().lower()
         if provider_type not in ('github', 'gitlab'):
@@ -527,34 +552,7 @@ def _register_handlers():
             return
         base_url = (parts[2].strip() if len(parts) > 2
                     else ('https://github.com' if provider_type == 'github' else 'https://gitlab.com'))
-        base_url = base_url.rstrip('/')
-        uid = msg.from_user.id
-        _awaiting_token.pop(uid, None)  # clear any stale state
-
-        if (provider_type == 'github'
-                and base_url == 'https://github.com'
-                and config.GITHUB_OAUTH_CLIENT_ID
-                and config.GITHUB_OAUTH_CLIENT_SECRET):
-            try:
-                from nvd_bot.repos.device_flow import start as df_start
-                data = df_start(config.GITHUB_OAUTH_CLIENT_ID)
-                send(
-                    f'🔑 <b>GitHub Login</b>\n\n'
-                    f'1. Visit: <a href="{html.escape(data["verification_uri"])}">'
-                    f'{html.escape(data["verification_uri"])}</a>\n'
-                    f'2. Enter this code:\n\n'
-                    f'<code>{html.escape(data["user_code"])}</code>\n\n'
-                    f'Waiting for authorization… (expires in {data["expires_in"] // 60} min)'
-                )
-                _executor.submit(
-                    _oauth_poll_task, uid, provider_type, base_url,
-                    data['device_code'], data['interval'], data['expires_in'],
-                )
-            except Exception as e:
-                send(f'❌ Device flow error: {html.escape(str(e))}\n\nFalling back to PAT…')
-                _send_pat_instructions(uid, provider_type, base_url)
-            return
-        _send_pat_instructions(uid, provider_type, base_url)
+        _start_connect_flow(uid, provider_type, base_url.rstrip('/'))
 
     # ── /disconnectgit ────────────────────────────────────────────────────────
     @bot.message_handler(commands=['disconnectgit'])
@@ -654,6 +652,25 @@ def _register_handlers():
 
         if action == 'nop':
             return
+
+        elif action == 'cg':
+            choice = parts[2] if len(parts) > 2 else ''
+            if choice == 'gh':
+                bot.edit_message_text('<b>Connect GitHub</b>\n\n🔄 Starting…',
+                                      config.CHAT_ID, mid, parse_mode='HTML')
+                _executor.submit(_start_connect_flow, uid, 'github', 'https://github.com')
+            elif choice == 'gl':
+                bot.edit_message_text('<b>Connect GitLab</b>\n\n🔄 Starting…',
+                                      config.CHAT_ID, mid, parse_mode='HTML')
+                _executor.submit(_start_connect_flow, uid, 'gitlab', 'https://gitlab.com')
+            elif choice in ('ghe', 'gls'):
+                provider_type = 'github' if choice == 'ghe' else 'gitlab'
+                example = ('https://github.mycompany.com' if choice == 'ghe'
+                           else 'https://gitlab.mycompany.com')
+                _awaiting_url[uid] = {'provider_type': provider_type}
+                bot.edit_message_text(
+                    f'Enter your self-hosted URL:\n<code>{html.escape(example)}</code>',
+                    config.CHAT_ID, mid, parse_mode='HTML')
 
         elif action == 'acc':
             acc_idx = int(parts[2])
@@ -917,6 +934,36 @@ def _build_diff_preview(original: str, fixed: str, max_lines: int = 20) -> str:
 # ── Git account / repo browser helpers ───────────────────────────────────────
 
 _GIT_ICONS = {'github': '🐙', 'gitlab': '🦊'}
+
+
+def _start_connect_flow(uid: int, provider_type: str, base_url: str):
+    """Kick off the connection flow for the given provider and base URL."""
+    _awaiting_token.pop(uid, None)
+    _awaiting_url.pop(uid, None)
+    if (provider_type == 'github'
+            and base_url == 'https://github.com'
+            and config.GITHUB_OAUTH_CLIENT_ID
+            and config.GITHUB_OAUTH_CLIENT_SECRET):
+        try:
+            from nvd_bot.repos.device_flow import start as df_start
+            data = df_start(config.GITHUB_OAUTH_CLIENT_ID)
+            send(
+                f'🔑 <b>GitHub Login</b>\n\n'
+                f'1. Visit: <a href="{html.escape(data["verification_uri"])}">'
+                f'{html.escape(data["verification_uri"])}</a>\n'
+                f'2. Enter this code:\n\n'
+                f'<code>{html.escape(data["user_code"])}</code>\n\n'
+                f'Waiting for authorization… (expires in {data["expires_in"] // 60} min)'
+            )
+            _executor.submit(
+                _oauth_poll_task, uid, provider_type, base_url,
+                data['device_code'], data['interval'], data['expires_in'],
+            )
+        except Exception as e:
+            send(f'❌ Device flow error: {html.escape(str(e))}\n\nFalling back to PAT…')
+            _send_pat_instructions(uid, provider_type, base_url)
+        return
+    _send_pat_instructions(uid, provider_type, base_url)
 
 
 def _send_pat_instructions(uid: int, provider_type: str, base_url: str):
