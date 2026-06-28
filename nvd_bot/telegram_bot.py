@@ -15,6 +15,8 @@ if TYPE_CHECKING:
     from nvd_bot.fixes.pending import PendingFixStore
     from nvd_bot.repos.github_client import GithubClient
     from nvd_bot.fixes.llm_client import LLMClient
+    from nvd_bot.repos.git_account_store import GitAccountStore
+    from nvd_bot.repos.git_providers import GitProvider
 
 bot: telebot.TeleBot = None  # initialized in init()
 _executor = ThreadPoolExecutor(max_workers=4)
@@ -24,34 +26,46 @@ _registry: RepoRegistry = None
 _pending: PendingFixStore = None
 _gh: GithubClient = None
 _llm: LLMClient = None
+_git_store: GitAccountStore = None
+
+# Per-user git browsing state (in-memory, non-persistent)
+_awaiting_token: dict[int, dict] = {}   # uid → {provider_type, base_url}
+_user_repo_cache: dict[int, dict] = {}  # uid → {acc_idx, gh_page, repos, has_more}
+_user_issue_ctx: dict[int, dict] = {}   # uid → {provider, owner, repo, token, issues, gh_page, has_more}
 
 
-def init(registry, pending, gh, llm):
-    global bot, _registry, _pending, _gh, _llm
+def init(registry, pending, gh, llm, git_store=None):
+    global bot, _registry, _pending, _gh, _llm, _git_store
     _registry = registry
     _pending = pending
     _gh = gh
     _llm = llm
+    _git_store = git_store
     bot = telebot.TeleBot(config.TELEGRAM_BOT_TOKEN, parse_mode='HTML')
     _register_handlers()
     try:
         bot.set_my_commands([
-            BotCommand('addrepo',       'Track a GitHub repo'),
-            BotCommand('removerepo',    'Stop tracking a repo'),
-            BotCommand('listrepos',     'List all tracked repos'),
-            BotCommand('scanrepo',      'Force re-scan a repo now'),
-            BotCommand('repoprofile',   'Show full repo profile JSON'),
-            BotCommand('setrepo',       'Set a per-repo config override'),
-            BotCommand('pending',       'List pending fix proposals'),
-            BotCommand('settings',      'Show all current settings'),
-            BotCommand('setconfig',     'Update a config value live'),
-            BotCommand('addkeyword',    'Add a CVE watchlist keyword'),
-            BotCommand('removekeyword', 'Remove a watchlist keyword'),
-            BotCommand('llmcheck',      'Test LLM connection'),
-            BotCommand('status',        'System status overview'),
-            BotCommand('help',          'Show all commands'),
-            BotCommand('adduser',       'Allow a user (owner only)'),
-            BotCommand('removeuser',    'Remove a user (owner only)'),
+            BotCommand('addrepo',        'Track a repo by URL'),
+            BotCommand('removerepo',     'Stop tracking a repo'),
+            BotCommand('listrepos',      'List all tracked repos'),
+            BotCommand('scanrepo',       'Force re-scan a repo now'),
+            BotCommand('repoprofile',    'Show full repo profile JSON'),
+            BotCommand('setrepo',        'Set a per-repo config override'),
+            BotCommand('connectgit',     'Connect a GitHub or GitLab account'),
+            BotCommand('disconnectgit',  'Disconnect a git account'),
+            BotCommand('gitaccounts',    'List your connected git accounts'),
+            BotCommand('myrepos',        'Browse repos from your git accounts'),
+            BotCommand('issues',         'View issues for a tracked repo'),
+            BotCommand('pending',        'List pending fix proposals'),
+            BotCommand('settings',       'Show all current settings'),
+            BotCommand('setconfig',      'Update a config value live'),
+            BotCommand('addkeyword',     'Add a CVE watchlist keyword'),
+            BotCommand('removekeyword',  'Remove a watchlist keyword'),
+            BotCommand('llmcheck',       'Test LLM connection'),
+            BotCommand('status',         'System status overview'),
+            BotCommand('help',           'Show all commands'),
+            BotCommand('adduser',        'Allow a user (owner only)'),
+            BotCommand('removeuser',     'Remove a user (owner only)'),
         ])
         print('[bot] Commands registered with Telegram.')
     except Exception as e:
@@ -447,8 +461,297 @@ def _register_handlers():
             '/llmcheck [model] — Test LLM connection\n\n'
             '<b>User Management (owner only)</b>\n'
             '/adduser &lt;id&gt; — Allow a Telegram user to use this bot\n'
-            '/removeuser &lt;id&gt; — Remove a user from the allowlist'
+            '/removeuser &lt;id&gt; — Remove a user from the allowlist\n\n'
+            '<b>Git Account Management</b>\n'
+            '/connectgit &lt;github|gitlab&gt; [url] — Connect a git account\n'
+            '/disconnectgit &lt;index&gt; — Remove a connected account\n'
+            '/gitaccounts — List your connected accounts\n'
+            '/myrepos — Browse and track repos from your accounts\n'
+            '/issues &lt;repo-id&gt; — View issues for a tracked repo'
         )
+
+    # ── PAT paste handler (must be registered before the catch-all) ──────────
+    @bot.message_handler(
+        func=lambda m: (m.from_user and m.from_user.id in _awaiting_token
+                        and m.text and not m.text.startswith('/'))
+    )
+    def handle_token_paste(msg: Message):
+        if not _authorized(msg):
+            return
+        uid = msg.from_user.id
+        ctx = _awaiting_token.pop(uid, None)
+        if not ctx:
+            return
+        try:
+            bot.delete_message(msg.chat.id, msg.message_id)
+        except Exception:
+            pass
+        token = msg.text.strip()
+        from nvd_bot.repos.git_providers import make_provider
+        provider = make_provider(ctx['provider_type'], ctx['base_url'])
+        try:
+            info = provider.get_user_info(token)
+        except Exception as e:
+            _awaiting_token[uid] = ctx
+            send(f'❌ Token validation failed: {html.escape(str(e))}\nPlease try again.')
+            return
+        if not info:
+            _awaiting_token[uid] = ctx
+            send('❌ Invalid token or insufficient permissions. Please check and try again.')
+            return
+        username = info.get('username', 'unknown')
+        _git_store.add_account(uid, ctx['provider_type'], ctx['base_url'], token, username)
+        send(
+            f'✅ Connected as <b>{html.escape(username)}</b> on '
+            f'{html.escape(ctx["base_url"])}!\n\nUse /myrepos to browse your repositories.'
+        )
+
+    # ── /connectgit ───────────────────────────────────────────────────────────
+    @bot.message_handler(commands=['connectgit'])
+    def cmd_connectgit(msg: Message):
+        if not _authorized(msg): return
+        parts = msg.text.split(maxsplit=2)
+        if len(parts) < 2:
+            send(
+                'Usage: /connectgit &lt;type&gt; [base_url]\n\n'
+                'Examples:\n'
+                '/connectgit github\n'
+                '/connectgit gitlab\n'
+                '/connectgit github https://github.mycompany.com\n'
+                '/connectgit gitlab https://gitlab.mycompany.com'
+            )
+            return
+        provider_type = parts[1].strip().lower()
+        if provider_type not in ('github', 'gitlab'):
+            send('❌ Type must be <code>github</code> or <code>gitlab</code>.')
+            return
+        base_url = (parts[2].strip() if len(parts) > 2
+                    else ('https://github.com' if provider_type == 'github' else 'https://gitlab.com'))
+        base_url = base_url.rstrip('/')
+        uid = msg.from_user.id
+        _awaiting_token.pop(uid, None)  # clear any stale state
+
+        if (provider_type == 'github'
+                and base_url == 'https://github.com'
+                and config.GITHUB_OAUTH_CLIENT_ID
+                and config.GITHUB_OAUTH_CLIENT_SECRET):
+            try:
+                from nvd_bot.repos.device_flow import start as df_start
+                data = df_start(config.GITHUB_OAUTH_CLIENT_ID)
+                send(
+                    f'🔑 <b>GitHub Login</b>\n\n'
+                    f'1. Visit: <a href="{html.escape(data["verification_uri"])}">'
+                    f'{html.escape(data["verification_uri"])}</a>\n'
+                    f'2. Enter this code:\n\n'
+                    f'<code>{html.escape(data["user_code"])}</code>\n\n'
+                    f'Waiting for authorization… (expires in {data["expires_in"] // 60} min)'
+                )
+                _executor.submit(
+                    _oauth_poll_task, uid, provider_type, base_url,
+                    data['device_code'], data['interval'], data['expires_in'],
+                )
+            except Exception as e:
+                send(f'❌ Device flow error: {html.escape(str(e))}\n\nFalling back to PAT…')
+                _send_pat_instructions(uid, provider_type, base_url)
+            return
+        _send_pat_instructions(uid, provider_type, base_url)
+
+    # ── /disconnectgit ────────────────────────────────────────────────────────
+    @bot.message_handler(commands=['disconnectgit'])
+    def cmd_disconnectgit(msg: Message):
+        if not _authorized(msg): return
+        uid = msg.from_user.id
+        parts = msg.text.split()
+        if len(parts) < 2 or not parts[1].isdigit():
+            send('Usage: /disconnectgit &lt;index&gt;\nSee /gitaccounts for indices.')
+            return
+        idx = int(parts[1])
+        ok = _git_store.remove_account(uid, idx)
+        if ok:
+            send(f'✅ Account #{idx} disconnected.')
+        else:
+            send(f'❌ Account #{idx} not found. Use /gitaccounts to see your accounts.')
+
+    # ── /gitaccounts ──────────────────────────────────────────────────────────
+    @bot.message_handler(commands=['gitaccounts'])
+    def cmd_gitaccounts(msg: Message):
+        if not _authorized(msg): return
+        uid = msg.from_user.id
+        accounts = _git_store.list_accounts(uid)
+        if not accounts:
+            send('No git accounts connected. Use /connectgit &lt;github|gitlab&gt; to add one.')
+            return
+        lines = ['<b>Your Connected Git Accounts</b>\n']
+        for acc in accounts:
+            icon = _GIT_ICONS.get(acc['type'], '🔗')
+            host = acc['base_url']
+            if host in ('https://github.com', 'https://gitlab.com'):
+                host = ''
+            else:
+                host = f' ({html.escape(host)})'
+            lines.append(f'{icon} [{acc["idx"]}] <b>{html.escape(acc["username"])}</b>'
+                         f' — {acc["type"].title()}{host}')
+        lines.append('\nUse /disconnectgit &lt;index&gt; to remove one.')
+        send('\n'.join(lines))
+
+    # ── /myrepos ──────────────────────────────────────────────────────────────
+    @bot.message_handler(commands=['myrepos'])
+    def cmd_myrepos(msg: Message):
+        if not _authorized(msg): return
+        uid = msg.from_user.id
+        accounts = _git_store.list_accounts(uid)
+        if not accounts:
+            send('No git accounts connected. Use /connectgit &lt;github|gitlab&gt; to add one.')
+            return
+        if len(accounts) == 1:
+            send(f'🔄 Fetching repos for <b>{html.escape(accounts[0]["username"])}</b>…')
+            _executor.submit(_fetch_and_show_repos, uid, 0, 1, None)
+            return
+        kb = InlineKeyboardMarkup()
+        for acc in accounts:
+            icon = _GIT_ICONS.get(acc['type'], '🔗')
+            label = f'{icon} {acc["username"]} ({acc["type"]})'
+            kb.add(InlineKeyboardButton(label, callback_data=f'gh:acc:{acc["idx"]}'))
+        send('<b>Select a git account:</b>', reply_markup=kb)
+
+    # ── /issues ───────────────────────────────────────────────────────────────
+    @bot.message_handler(commands=['issues'])
+    def cmd_issues(msg: Message):
+        if not _authorized(msg): return
+        uid = msg.from_user.id
+        parts = msg.text.split(maxsplit=1)
+        if len(parts) < 2:
+            send('Usage: /issues &lt;repo-id&gt;\nGet the repo ID from /listrepos.')
+            return
+        profile = _registry.get_repo(parts[1].strip())
+        if not profile:
+            send(f'❌ Repo <code>{html.escape(parts[1].strip())}</code> not found.')
+            return
+        from nvd_bot.repos.git_providers import make_provider, detect_provider_from_url
+        provider_type, base_url = detect_provider_from_url(profile.url)
+        acc = _git_store.find_account_for_host(uid, provider_type, base_url)
+        token = (acc['token'] if acc else profile.github_token or config.GITHUB_TOKEN)
+        if not token:
+            send('❌ No token for this repo. Connect your account with /connectgit first.')
+            return
+        owner, repo_name = (profile.name.split('/', 1) if '/' in profile.name
+                            else ('', profile.name))
+        provider = make_provider(provider_type, base_url)
+        send(f'🔄 Fetching issues for <b>{html.escape(profile.name)}</b>…')
+        _executor.submit(_fetch_and_show_issues, uid, provider, owner, repo_name, token, 1, None)
+
+    # ── gh:* callback handler ─────────────────────────────────────────────────
+    @bot.callback_query_handler(func=lambda call: call.data.startswith('gh:'))
+    def handle_gh_callback(call: CallbackQuery):
+        if not _authorized(call):
+            bot.answer_callback_query(call.id, 'Unauthorized.')
+            return
+        bot.answer_callback_query(call.id)
+        uid = call.from_user.id
+        parts = call.data.split(':')
+        action = parts[1] if len(parts) > 1 else ''
+        mid = call.message.message_id
+
+        if action == 'nop':
+            return
+
+        elif action == 'acc':
+            acc_idx = int(parts[2])
+            acc = _git_store.get_account(uid, acc_idx)
+            if acc:
+                bot.edit_message_text(
+                    f'🔄 Fetching repos for <b>{html.escape(acc["username"])}</b>…',
+                    config.CHAT_ID, mid, parse_mode='HTML')
+            _executor.submit(_fetch_and_show_repos, uid, acc_idx, 1, mid)
+
+        elif action == 'rp':
+            acc_idx, gh_page = int(parts[2]), int(parts[3])
+            _executor.submit(_fetch_and_show_repos, uid, acc_idx, gh_page, mid)
+
+        elif action == 'r':
+            acc_idx, ridx = int(parts[2]), int(parts[3])
+            ctx = _user_repo_cache.get(uid, {})
+            repos = ctx.get('repos', [])
+            if ridx >= len(repos):
+                send('❌ Repo not in cache. Use /myrepos to refresh.')
+                return
+            _send_repo_detail(uid, acc_idx, ridx, repos[ridx], mid)
+
+        elif action == 'tr':
+            acc_idx, ridx = int(parts[2]), int(parts[3])
+            ctx = _user_repo_cache.get(uid, {})
+            repos = ctx.get('repos', [])
+            if ridx >= len(repos):
+                send('❌ Repo not in cache.')
+                return
+            repo = repos[ridx]
+            acc = _git_store.get_account(uid, acc_idx)
+            token = acc['token'] if acc else None
+            send(f'Adding <code>{html.escape(repo["full_name"])}</code>…')
+            _executor.submit(_add_repo_task, repo['url'], token)
+
+        elif action == 'ri':
+            acc_idx, ridx = int(parts[2]), int(parts[3])
+            ctx = _user_repo_cache.get(uid, {})
+            repos = ctx.get('repos', [])
+            if ridx >= len(repos):
+                send('❌ Repo not in cache. Use /myrepos to refresh.')
+                return
+            repo = repos[ridx]
+            full_name = repo['full_name']
+            owner, repo_name = (full_name.split('/', 1) if '/' in full_name
+                                else ('', full_name))
+            acc = _git_store.get_account(uid, acc_idx)
+            if not acc:
+                send('❌ Account not found.')
+                return
+            from nvd_bot.repos.git_providers import make_provider
+            provider = make_provider(acc['type'], acc['base_url'])
+            bot.edit_message_text(
+                f'🔄 Fetching issues for <b>{html.escape(full_name)}</b>…',
+                config.CHAT_ID, mid, parse_mode='HTML')
+            _executor.submit(
+                _fetch_and_show_issues, uid, provider,
+                owner, repo_name, acc['token'], 1, mid,
+            )
+
+        elif action == 'rb':
+            ctx = _user_repo_cache.get(uid, {})
+            acc_idx = ctx.get('acc_idx', 0)
+            gh_page = ctx.get('gh_page', 1)
+            _executor.submit(_fetch_and_show_repos, uid, acc_idx, gh_page, mid)
+
+        elif action == 'ilp':
+            gh_page = int(parts[2])
+            ctx = _user_issue_ctx.get(uid)
+            if not ctx:
+                send('❌ Issue context lost. Please use /issues again.')
+                return
+            _executor.submit(
+                _fetch_and_show_issues, uid, ctx['provider'],
+                ctx['owner'], ctx['repo'], ctx['token'], gh_page, mid,
+            )
+
+        elif action == 'iv':
+            num = int(parts[2])
+            ctx = _user_issue_ctx.get(uid)
+            if not ctx:
+                send('❌ Issue context lost.')
+                return
+            _executor.submit(
+                _show_issue_detail, uid, ctx['provider'],
+                ctx['owner'], ctx['repo'], ctx['token'], num, mid,
+            )
+
+        elif action == 'ib':
+            ctx = _user_issue_ctx.get(uid)
+            if not ctx:
+                send('❌ Issue context lost.')
+                return
+            _executor.submit(
+                _fetch_and_show_issues, uid, ctx['provider'],
+                ctx['owner'], ctx['repo'], ctx['token'], ctx.get('gh_page', 1), mid,
+            )
 
     # ── Inline keyboard callbacks ─────────────────────────────────────────────
     @bot.callback_query_handler(func=lambda call: call.data.startswith('fix:'))
@@ -603,3 +906,254 @@ def _build_diff_preview(original: str, fixed: str, max_lines: int = 20) -> str:
             diff_lines.append('...')
             break
     return '\n'.join(diff_lines) if diff_lines else 'No visible changes in preview.'
+
+
+# ── Git account / repo browser helpers ───────────────────────────────────────
+
+_GIT_ICONS = {'github': '🐙', 'gitlab': '🦊'}
+
+
+def _send_pat_instructions(uid: int, provider_type: str, base_url: str):
+    """Store awaiting-token state and send PAT creation instructions to CHAT_ID."""
+    _awaiting_token[uid] = {'provider_type': provider_type, 'base_url': base_url}
+    if provider_type == 'github':
+        if base_url == 'https://github.com':
+            pat_url = 'https://github.com/settings/tokens/new?scopes=repo,read:user'
+        else:
+            pat_url = f'{base_url}/settings/tokens/new'
+        send(
+            f'🔑 <b>GitHub Personal Access Token</b>\n\n'
+            f'Create a token at:\n<code>{html.escape(pat_url)}</code>\n\n'
+            f'Required scopes: <code>repo</code>, <code>read:user</code>\n\n'
+            f'Then paste the token here.\n'
+            f'⚠️ The message will be deleted from the chat immediately.'
+        )
+    else:
+        if base_url == 'https://gitlab.com':
+            pat_url = 'https://gitlab.com/-/user_settings/personal_access_tokens'
+        else:
+            pat_url = f'{base_url}/-/user_settings/personal_access_tokens'
+        send(
+            f'🔑 <b>GitLab Personal Access Token</b>\n\n'
+            f'Create a token at:\n<code>{html.escape(pat_url)}</code>\n\n'
+            f'Required scopes: <code>read_api</code>, <code>read_user</code>\n\n'
+            f'Then paste the token here.\n'
+            f'⚠️ The message will be deleted from the chat immediately.'
+        )
+
+
+def _oauth_poll_task(uid: int, provider_type: str, base_url: str,
+                     device_code: str, interval: int, expires_in: int):
+    """Background: poll GitHub Device Flow until authorized or expired."""
+    import time
+    from nvd_bot.repos.device_flow import poll_token
+    from nvd_bot.repos.git_providers import GitHubProvider
+    elapsed = 0
+    poll_interval = max(interval, 5)
+    while elapsed < expires_in:
+        time.sleep(poll_interval)
+        elapsed += poll_interval
+        try:
+            token = poll_token(
+                config.GITHUB_OAUTH_CLIENT_ID,
+                config.GITHUB_OAUTH_CLIENT_SECRET,
+                device_code, base_url,
+            )
+        except RuntimeError as e:
+            send(f'❌ GitHub authorization {html.escape(str(e))}. Please try /connectgit again.')
+            return
+        if token:
+            provider = GitHubProvider(base_url)
+            info = provider.get_user_info(token)
+            username = info['username'] if info else 'unknown'
+            _git_store.add_account(uid, provider_type, base_url, token, username)
+            send(
+                f'✅ Connected as <b>@{html.escape(username)}</b> on {html.escape(base_url)}!\n\n'
+                f'Use /myrepos to browse your repositories.'
+            )
+            return
+    send('❌ GitHub authorization timed out. Please try /connectgit again.')
+
+
+def _fetch_and_show_repos(uid: int, acc_idx: int, gh_page: int, edit_msg_id):
+    """Fetch one page of repos for account acc_idx and render the browser."""
+    from nvd_bot.repos.git_providers import make_provider
+    acc = _git_store.get_account(uid, acc_idx)
+    if not acc:
+        send(f'❌ Account #{acc_idx} not found.')
+        return
+    provider = make_provider(acc['type'], acc['base_url'])
+    try:
+        repos = provider.list_user_repos(acc['token'], page=gh_page, per_page=8)
+    except Exception as e:
+        send(f'❌ Failed to fetch repos: {html.escape(str(e))}')
+        return
+    _user_repo_cache[uid] = {
+        'acc_idx': acc_idx,
+        'gh_page': gh_page,
+        'repos': repos,
+        'has_more': len(repos) == 8,
+    }
+    _send_repo_browser(uid, edit_msg_id=edit_msg_id)
+
+
+def _send_repo_browser(uid: int, edit_msg_id=None):
+    ctx = _user_repo_cache.get(uid)
+    if not ctx or not ctx['repos']:
+        text = 'No repositories found on this page. Try /myrepos to start over.'
+        _edit_or_send(text, None, edit_msg_id)
+        return
+
+    acc_idx = ctx['acc_idx']
+    gh_page = ctx['gh_page']
+    repos = ctx['repos']
+    has_more = ctx['has_more']
+
+    acc = _git_store.get_account(uid, acc_idx)
+    acc_icon = _GIT_ICONS.get(acc['type'], '🔗') if acc else '🔗'
+    acc_name = acc['username'] if acc else f'#{acc_idx}'
+
+    kb = InlineKeyboardMarkup()
+    for i, repo in enumerate(repos):
+        lock = '🔒' if repo.get('private') else '📦'
+        label = f'{lock} {repo["full_name"]}'
+        if len(label) > 45:
+            label = label[:42] + '…'
+        kb.add(InlineKeyboardButton(label, callback_data=f'gh:r:{acc_idx}:{i}'))
+
+    nav = []
+    if gh_page > 1:
+        nav.append(InlineKeyboardButton('◀', callback_data=f'gh:rp:{acc_idx}:{gh_page-1}'))
+    nav.append(InlineKeyboardButton(f'Page {gh_page}', callback_data='gh:nop'))
+    if has_more:
+        nav.append(InlineKeyboardButton('▶', callback_data=f'gh:rp:{acc_idx}:{gh_page+1}'))
+    if nav:
+        kb.row(*nav)
+
+    text = f'{acc_icon} <b>{html.escape(acc_name)}\'s Repositories</b> — page {gh_page}\n\nTap a repo to see options.'
+    _edit_or_send(text, kb, edit_msg_id)
+
+
+def _send_repo_detail(uid: int, acc_idx: int, ridx: int, repo: dict, edit_msg_id=None):
+    full_name = repo['full_name']
+    desc = (repo.get('description') or 'No description')[:200]
+    lock = '🔒 Private' if repo.get('private') else '🔓 Public'
+    open_issues = repo.get('open_issues', 0)
+    url = repo.get('url', '')
+
+    text = (
+        f'📦 <b>{html.escape(full_name)}</b>\n\n'
+        f'{lock}\n'
+        f'📝 {html.escape(desc)}\n'
+        f'🐛 Open issues: {open_issues}\n'
+        + (f'🔗 <a href="{html.escape(url)}">{html.escape(url)}</a>' if url else '')
+    )
+    kb = InlineKeyboardMarkup()
+    kb.row(
+        InlineKeyboardButton('➕ Track', callback_data=f'gh:tr:{acc_idx}:{ridx}'),
+        InlineKeyboardButton('🐛 Issues', callback_data=f'gh:ri:{acc_idx}:{ridx}'),
+    )
+    kb.add(InlineKeyboardButton('← Back to repos', callback_data='gh:rb'))
+    _edit_or_send(text, kb, edit_msg_id, disable_web_page_preview=True)
+
+
+def _fetch_and_show_issues(uid: int, provider, owner: str, repo: str,
+                            token: str, gh_page: int, edit_msg_id=None):
+    try:
+        issues = provider.list_issues(owner, repo, token, page=gh_page, per_page=8)
+    except Exception as e:
+        send(f'❌ Failed to fetch issues: {html.escape(str(e))}')
+        return
+    _user_issue_ctx[uid] = {
+        'provider': provider,
+        'owner': owner,
+        'repo': repo,
+        'token': token,
+        'issues': issues,
+        'gh_page': gh_page,
+        'has_more': len(issues) == 8,
+    }
+    _send_issue_list(uid, edit_msg_id)
+
+
+def _send_issue_list(uid: int, edit_msg_id=None):
+    ctx = _user_issue_ctx.get(uid)
+    if not ctx:
+        _edit_or_send('❌ Issue context lost. Please use /issues &lt;repo-id&gt; again.', None, edit_msg_id)
+        return
+
+    owner, repo = ctx['owner'], ctx['repo']
+    issues = ctx['issues']
+    gh_page = ctx['gh_page']
+    has_more = ctx['has_more']
+
+    if not issues:
+        _edit_or_send(
+            f'No open issues in <b>{html.escape(owner)}/{html.escape(repo)}</b>.',
+            None, edit_msg_id,
+        )
+        return
+
+    kb = InlineKeyboardMarkup()
+    for issue in issues:
+        state_icon = '🟢' if issue['state'] in ('open', 'opened') else '🔴'
+        label = f'{state_icon} #{issue["number"]} {issue["title"]}'
+        if len(label) > 50:
+            label = label[:47] + '…'
+        kb.add(InlineKeyboardButton(label, callback_data=f'gh:iv:{issue["number"]}'))
+
+    nav = []
+    if gh_page > 1:
+        nav.append(InlineKeyboardButton('◀', callback_data=f'gh:ilp:{gh_page-1}'))
+    nav.append(InlineKeyboardButton(f'Page {gh_page}', callback_data='gh:nop'))
+    if has_more:
+        nav.append(InlineKeyboardButton('▶', callback_data=f'gh:ilp:{gh_page+1}'))
+    if nav:
+        kb.row(*nav)
+
+    text = f'🐛 <b>Issues — {html.escape(owner)}/{html.escape(repo)}</b> (page {gh_page})'
+    _edit_or_send(text, kb, edit_msg_id)
+
+
+def _show_issue_detail(uid: int, provider, owner: str, repo: str,
+                        token: str, number: int, edit_msg_id=None):
+    try:
+        issue = provider.get_issue(owner, repo, number, token)
+    except Exception as e:
+        send(f'❌ Failed to fetch issue: {html.escape(str(e))}')
+        return
+    if not issue:
+        send(f'❌ Issue #{number} not found.')
+        return
+
+    state_icon = '🟢' if issue['state'] in ('open', 'opened') else '🔴'
+    labels_str = '  '.join(f'[{html.escape(l)}]' for l in issue.get('labels', []))
+    body = (issue.get('body') or '').strip()
+    body_preview = body[:1000] + ('\n<i>[truncated]</i>' if len(body) > 1000 else '')
+
+    text = (
+        f'{state_icon} <b>#{issue["number"]}: {html.escape(issue["title"])}</b>\n'
+        f'<b>{html.escape(owner)}/{html.escape(repo)}</b>\n'
+        + (f'{labels_str}\n' if labels_str else '')
+        + f'👤 {html.escape(issue.get("author", ""))} · {html.escape(issue.get("created_at", ""))}\n'
+        f'🔗 <a href="{html.escape(issue.get("url", ""))}">Open in browser</a>\n\n'
+        + (f'<pre>{html.escape(body_preview)}</pre>' if body_preview else '<i>No description.</i>')
+    )
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton('← Back to issues', callback_data='gh:ib'))
+    _edit_or_send(text, kb, edit_msg_id, disable_web_page_preview=True)
+
+
+def _edit_or_send(text: str, kb, edit_msg_id=None, disable_web_page_preview: bool = False):
+    """Edit an existing message in place, or send a new one if not possible."""
+    if edit_msg_id:
+        try:
+            bot.edit_message_text(
+                text, config.CHAT_ID, edit_msg_id,
+                parse_mode='HTML', reply_markup=kb,
+                disable_web_page_preview=disable_web_page_preview,
+            )
+            return
+        except Exception:
+            pass
+    send(text, reply_markup=kb)

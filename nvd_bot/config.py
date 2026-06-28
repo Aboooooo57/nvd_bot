@@ -10,6 +10,8 @@ GITHUB_TOKEN: str | None = os.getenv('GITHUB_TOKEN')
 OPENROUTER_API_KEY: str | None = os.getenv('OPENROUTER_API_KEY')
 LITELLM_API_KEY: str | None = os.getenv('LITELLM_API_KEY')
 LITELLM_BASE_URL: str | None = os.getenv('LITELLM_BASE_URL')
+GITHUB_OAUTH_CLIENT_ID: str | None = os.getenv('GITHUB_OAUTH_CLIENT_ID')
+GITHUB_OAUTH_CLIENT_SECRET: str | None = os.getenv('GITHUB_OAUTH_CLIENT_SECRET')
 _owner_raw = os.getenv('TELEGRAM_OWNER_ID', '')
 TELEGRAM_OWNER_ID: int | None = int(_owner_raw) if _owner_raw.strip().isdigit() else None
 
