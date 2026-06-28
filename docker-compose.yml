@@ -20,5 +20,9 @@ services:
       # Option B: LiteLLM Proxy (self-hosted)
       - LITELLM_API_KEY=${LITELLM_API_KEY}
       - LITELLM_BASE_URL=${LITELLM_BASE_URL}
+      # GitHub OAuth App (optional — enables /connectgit Device Flow for github.com)
+      # Register at https://github.com/settings/developers, enable "Device Authorization Grant"
+      - GITHUB_OAUTH_CLIENT_ID=${GITHUB_OAUTH_CLIENT_ID}
+      - GITHUB_OAUTH_CLIENT_SECRET=${GITHUB_OAUTH_CLIENT_SECRET}
     volumes:
       - ./data:/app/data
