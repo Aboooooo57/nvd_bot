@@ -12,7 +12,15 @@ def start(client_id: str, base_url: str = 'https://github.com') -> dict:
         data={'client_id': client_id, 'scope': SCOPES},
         timeout=20,
     )
-    r.raise_for_status()
+    try:
+        r.raise_for_status()
+    except requests.exceptions.HTTPError:
+        if r.status_code == 400:
+            raise RuntimeError(
+                'GitHub OAuth App does not have "Device Authorization Grant" enabled.\n'
+                'Go to github.com/settings/developers → your app → enable it, then try again.'
+            )
+        raise RuntimeError(f'GitHub Device Flow request failed ({r.status_code})')
     data = r.json()
     if 'error' in data:
         raise RuntimeError(f'Device flow start error: {data["error"]} — {data.get("error_description", "")}')
