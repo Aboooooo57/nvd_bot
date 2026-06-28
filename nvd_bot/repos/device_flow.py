@@ -16,14 +16,9 @@ def start(client_id: str, base_url: str = 'https://github.com') -> dict:
         r.raise_for_status()
     except requests.exceptions.HTTPError:
         if r.status_code == 400:
-            try:
-                gh_error = r.json().get('error_description') or r.json().get('error') or ''
-            except Exception:
-                gh_error = ''
-            detail = f' ({gh_error})' if gh_error else ''
             raise RuntimeError(
-                f'GitHub returned 400{detail}.\n'
-                'Check that GITHUB_OAUTH_CLIENT_ID in your .env is correct.'
+                'GitHub OAuth App does not have "Enable Device Flow" checked.\n'
+                'Go to github.com/settings/developers → your app → check "Enable Device Flow", then try again.'
             )
         raise RuntimeError(f'GitHub Device Flow request failed ({r.status_code})')
     data = r.json()
