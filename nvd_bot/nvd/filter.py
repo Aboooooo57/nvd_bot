@@ -133,5 +133,5 @@ def _augment_from_description(description: str, result: dict[str, list[str]]):
             m = re.search(pattern, description, re.IGNORECASE)
             if m:
                 specs.append(f'{op}{m.group(1)}')
-        if keyword not in result:
+        if keyword not in result and specs:
             result[keyword] = specs
