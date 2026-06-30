@@ -20,7 +20,6 @@ DATA_DIR = 'data'
 SEEN_CVES_FILE = 'data/seen_cves.csv'
 REPOS_DIR = 'data/repos'
 REPO_REGISTRY_FILE = 'data/repos/registry.json'
-PENDING_FIXES_FILE = 'data/pending_fixes.json'
 CONFIG_FILE = 'data/config.json'
 
 # ── Defaults (written to config.json on first run) ────────────────────────────
@@ -34,8 +33,6 @@ _DEFAULTS: dict = {
     'llm_provider': 'openrouter',
     'llm_model': 'gemini-3.5-flash',
     'llm_max_tokens': 2000,
-    'pr_base_branch': 'main',
-    'pr_branch_prefix': 'security/fix',
     'profile_file_path': '.nvd_bot/profile.json',
     'watchlist': ['python', 'node', 'linux', 'ubuntu', 'debian', 'fastapi', 'django', 'flask', 'express', 'spring'],
     'allowed_user_ids': [],

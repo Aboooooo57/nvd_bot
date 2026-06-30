@@ -14,7 +14,6 @@ from nvd_bot.nvd.filter import is_relevant_to_watchlist, extract_affected_packag
 from nvd_bot.nvd.formatter import build_alert_message, build_daily_summary_message, extract_meta
 from nvd_bot.repos.registry import RepoRegistry
 from nvd_bot.repos.github_client import GithubClient
-from nvd_bot.fixes.pending import PendingFixStore
 from nvd_bot.fixes.llm_client import LLMClient
 from nvd_bot.matching.matcher import match_cve_to_repos
 from nvd_bot import telegram_bot as tgbot
@@ -75,7 +74,7 @@ def _meets_threshold(severity: str) -> bool:
 
 
 def process_cve(cve_item: dict, registry: RepoRegistry,
-                pending: PendingFixStore, gh: GithubClient, llm: LLMClient):
+                gh: GithubClient, llm: LLMClient):
     from concurrent.futures import ThreadPoolExecutor
     cve_id, description, severity, _ = extract_meta(cve_item)
     if not cve_id:
@@ -172,13 +171,13 @@ def _handle_match(match, cve_item: dict, gh: GithubClient):
 
 # ── Scheduled jobs ────────────────────────────────────────────────────────────
 
-def _cve_job(registry, pending, gh, llm):
+def _cve_job(registry, gh, llm):
     items = get_new_cves()
     if not items:
         print('[main] No new CVEs.')
         return
     for item in items:
-        process_cve(item, registry, pending, gh, llm)
+        process_cve(item, registry, gh, llm)
         time.sleep(1)
 
 
@@ -201,13 +200,12 @@ def main():
     print('[main] Config loaded.')
 
     registry = RepoRegistry()
-    pending = PendingFixStore()
     gh = GithubClient()
     llm = LLMClient()
     git_store = GitAccountStore()
 
     # Init and start Telegram bot polling in background thread
-    bot = tgbot.init(registry, pending, gh, llm, git_store)
+    bot = tgbot.init(registry, gh, llm, git_store)
     threading.Thread(
         target=lambda: bot.infinity_polling(none_stop=True, timeout=60),
         daemon=True,
@@ -216,14 +214,14 @@ def main():
     print('[main] Telegram bot polling started.')
 
     # Run initial CVE job
-    _cve_job(registry, pending, gh, llm)
+    _cve_job(registry, gh, llm)
 
     # Schedule recurring jobs
     poll_interval = config.get('nvd_poll_interval_minutes', 5)
     commit_interval = config.get('commit_poll_interval_minutes', 15)
     summary_time = config.get('daily_summary_time', '23:55')
 
-    schedule.every(poll_interval).minutes.do(_cve_job, registry, pending, gh, llm)
+    schedule.every(poll_interval).minutes.do(_cve_job, registry, gh, llm)
     schedule.every(commit_interval).minutes.do(poll_commits, registry, gh)
     schedule.every().day.at(summary_time).do(_daily_summary_job)
 
