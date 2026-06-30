@@ -14,9 +14,7 @@ class RepoProfile:
     packages: dict = field(default_factory=dict)  # {"requirements.txt": {"pkg": "ver"}}
     last_commit_sha: Optional[str] = None
     last_scanned_at: Optional[str] = None
-    active_fixes: list = field(default_factory=list)
     enabled: bool = True
-    auto_pr: bool = False
     github_token: Optional[str] = None
     # Per-repo config overrides (any key from config.json)
     overrides: dict = field(default_factory=dict)
@@ -31,9 +29,7 @@ class RepoProfile:
             'packages': self.packages,
             'last_commit_sha': self.last_commit_sha,
             'last_scanned_at': self.last_scanned_at,
-            'active_fixes': self.active_fixes,
             'enabled': self.enabled,
-            'auto_pr': self.auto_pr,
             'github_token': self.github_token,
             'overrides': self.overrides,
         }
@@ -49,9 +45,7 @@ class RepoProfile:
             packages=data.get('packages', {}),
             last_commit_sha=data.get('last_commit_sha'),
             last_scanned_at=data.get('last_scanned_at'),
-            active_fixes=data.get('active_fixes', []),
             enabled=data.get('enabled', True),
-            auto_pr=data.get('auto_pr', False),
             github_token=data.get('github_token'),
             overrides=data.get('overrides', {}),
         )
