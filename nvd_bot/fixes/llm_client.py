@@ -53,3 +53,29 @@ class LLMClient:
         except Exception as e:
             print(f'[llm] Generation failed: {e}')
             raise
+
+    def chat(self, messages: list[dict], max_tokens: int | None = None,
+             model_override: str | None = None) -> str:
+        """Call the LLM with a pre-built OpenAI-format messages list (multi-turn)."""
+        import litellm
+        provider = self.active_provider()
+        model = model_override or config.get('llm_model', 'gemini-3.5-flash')
+        max_tok = max_tokens or config.get('llm_max_tokens', 2000)
+        kwargs: dict = {'messages': messages, 'max_tokens': max_tok}
+        if provider == 'openrouter':
+            if config.OPENROUTER_API_KEY:
+                kwargs['api_key'] = config.OPENROUTER_API_KEY
+                kwargs['api_base'] = 'https://openrouter.ai/api/v1'
+            kwargs['model'] = model
+        elif provider == 'litellm_proxy':
+            if config.LITELLM_API_KEY:
+                kwargs['api_key'] = config.LITELLM_API_KEY
+            if config.LITELLM_BASE_URL:
+                kwargs['api_base'] = config.LITELLM_BASE_URL
+            kwargs['model'] = model
+        try:
+            response = litellm.completion(**kwargs)
+            return response.choices[0].message.content or ''
+        except Exception as e:
+            print(f'[llm] Chat failed: {e}')
+            raise
