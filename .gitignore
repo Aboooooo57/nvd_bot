@@ -20,11 +20,11 @@ env/
 .DS_Store
 Thumbs.db
 
-# Project Data — ignore runtime data, keep structure
+# Project Data — runtime files, never commit
 data/seen_cves.csv
 data/pending_fixes.json
-# Keep config.json and repos registry in version control
-# (so settings survive container rebuilds)
+data/user_git_accounts.json
+data/repos/
 # In case you ran it in the root folder previously
 seen_cves.json
 
