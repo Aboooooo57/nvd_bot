@@ -16,7 +16,7 @@ from nvd_bot.repos.registry import RepoRegistry
 from nvd_bot.repos.github_client import GithubClient
 from nvd_bot.fixes.llm_client import LLMClient
 from nvd_bot.matching.matcher import match_cve_to_repos
-from nvd_bot import telegram_bot as tgbot
+from nvd_bot import bot as tgbot
 from nvd_bot.scheduler import poll_commits
 from nvd_bot.repos.git_account_store import GitAccountStore
 
@@ -24,8 +24,10 @@ from nvd_bot.repos.git_account_store import GitAccountStore
 _daily_alerts: list[dict] = []
 _daily_lock = threading.Lock()
 
+_SEVERITY_RANK = {'LOW': 1, 'MEDIUM': 2, 'HIGH': 3, 'CRITICAL': 4}
 
-# ── CSV deduplication (unchanged format from original) ────────────────────────
+
+# ── CSV deduplication ─────────────────────────────────────────────────────────
 
 def _load_seen() -> set[str]:
     if not os.path.exists(config.SEEN_CVES_FILE):
@@ -62,19 +64,14 @@ def _save_seen(cve_id: str):
         writer.writerows(data)
 
 
-# ── Core CVE processing pipeline ──────────────────────────────────────────────
-
-_SEVERITY_RANK = {'LOW': 1, 'MEDIUM': 2, 'HIGH': 3, 'CRITICAL': 4}
-
-
 def _meets_threshold(severity: str) -> bool:
-    """True if the CVE severity is at or above the configured threshold."""
     thr = config.get('severity_threshold', 'MEDIUM')
     return _SEVERITY_RANK.get((severity or '').upper(), 0) >= _SEVERITY_RANK.get(thr.upper(), 2)
 
 
-def process_cve(cve_item: dict, registry: RepoRegistry,
-                gh: GithubClient, llm: LLMClient):
+# ── Core CVE processing pipeline ──────────────────────────────────────────────
+
+def process_cve(cve_item: dict, registry: RepoRegistry, gh: GithubClient, llm: LLMClient):
     from concurrent.futures import ThreadPoolExecutor
     cve_id, description, severity, _ = extract_meta(cve_item)
     if not cve_id:
@@ -84,7 +81,6 @@ def process_cve(cve_item: dict, registry: RepoRegistry,
     if cve_id in seen:
         return
 
-    # Filter: relevant to any tracked repo OR watchlist keyword
     affected = extract_affected_packages(cve_item)
     repos = registry.list_repos()
     matches = match_cve_to_repos(cve_item, repos, affected) if affected else []
@@ -94,7 +90,6 @@ def process_cve(cve_item: dict, registry: RepoRegistry,
         _save_seen(cve_id)
         return
 
-    # Send standard CVE alert
     msg = build_alert_message(cve_item)
     tgbot.send(msg)
     _save_seen(cve_id)
@@ -111,9 +106,8 @@ def process_cve(cve_item: dict, registry: RepoRegistry,
 
     print(f'[main] {cve_id} ({severity}): {len(matches)} repo match(es)')
 
-    # Create GitHub issues for each matching repo (non-blocking), gated by severity
     if matches and not _meets_threshold(severity):
-        print(f'[main] {cve_id}: {len(matches)} match(es) below severity threshold '
+        print(f'[main] {cve_id}: below severity threshold '
               f'({config.get("severity_threshold", "MEDIUM")}) — no issue created')
     elif matches:
         executor = ThreadPoolExecutor(max_workers=2)
@@ -168,7 +162,6 @@ def _handle_match(match, cve_item: dict, gh: GithubClient):
         )
 
 
-
 # ── Scheduled jobs ────────────────────────────────────────────────────────────
 
 def _cve_job(registry, gh, llm):
@@ -204,7 +197,6 @@ def main():
     llm = LLMClient()
     git_store = GitAccountStore()
 
-    # Init and start Telegram bot polling in background thread
     bot = tgbot.init(registry, gh, llm, git_store)
     threading.Thread(
         target=lambda: bot.infinity_polling(none_stop=True, timeout=60),
@@ -213,10 +205,8 @@ def main():
     ).start()
     print('[main] Telegram bot polling started.')
 
-    # Run initial CVE job
     _cve_job(registry, gh, llm)
 
-    # Schedule recurring jobs
     poll_interval = config.get('nvd_poll_interval_minutes', 5)
     commit_interval = config.get('commit_poll_interval_minutes', 15)
     summary_time = config.get('daily_summary_time', '23:55')
