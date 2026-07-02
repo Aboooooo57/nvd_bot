@@ -24,6 +24,7 @@ Thumbs.db
 data/seen_cves.csv
 data/pending_fixes.json
 data/user_git_accounts.json
+data/config.json
 data/repos/
 # In case you ran it in the root folder previously
 seen_cves.json
