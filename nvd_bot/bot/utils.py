@@ -7,14 +7,20 @@ from nvd_bot.bot import state
 _GIT_ICONS = {'github': '🐙', 'gitlab': '🦊'}
 
 
-def send(text: str, reply_markup=None, chat_id: str | None = None):
-    """Send a Telegram HTML message to the configured chat."""
+def send(text: str, reply_markup=None, chat_id: str | None = None,
+         disable_web_page_preview: bool = False):
+    """Send a Telegram HTML message to the configured chat. Returns the sent
+    Message (so callers can capture message_id), or None on failure."""
     from nvd_bot import config
     cid = chat_id or config.CHAT_ID
     try:
-        state.bot.send_message(cid, text, parse_mode='HTML', reply_markup=reply_markup)
+        return state.bot.send_message(
+            cid, text, parse_mode='HTML', reply_markup=reply_markup,
+            disable_web_page_preview=disable_web_page_preview,
+        )
     except Exception as e:
         print(f'[bot] send error: {e}')
+        return None
 
 
 def edit_or_send(text: str, reply_markup, edit_msg_id,

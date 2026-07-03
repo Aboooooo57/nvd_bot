@@ -61,6 +61,17 @@ def build_alert_message(cve_item: dict) -> str:
     )
 
 
+def _source_link(cve_id: str, message_id: int | None) -> str:
+    """Link to the original Telegram alert for this CVE, falling back to the
+    NVD detail page if a message-level deep link can't be constructed
+    (message_id missing, or CHAT_ID isn't a supergroup/channel)."""
+    chat_id = str(config.CHAT_ID or '')
+    if message_id and chat_id.startswith('-100'):
+        internal_id = chat_id[4:]
+        return f'https://t.me/c/{internal_id}/{message_id}'
+    return f'https://nvd.nist.gov/vuln/detail/{cve_id}'
+
+
 def build_daily_summary_message(daily_alerts: list[dict]) -> str:
     today = datetime.now().strftime('%Y-%m-%d')
     count = len(daily_alerts)
@@ -79,7 +90,10 @@ def build_daily_summary_message(daily_alerts: list[dict]) -> str:
         sev = alert['severity']
         icon = _severity_icon(sev)
         kw_tags = ' '.join(to_tag(kw) for kw in sorted(alert.get('keywords', [])))
-        lines.append(f"{icon} <b>{html.escape(alert['cve_id'])}</b>  [{sev}]  {kw_tags}")
+        cve_id = alert['cve_id']
+        link = _source_link(cve_id, alert.get('message_id'))
+        cve_link = f'<a href="{html.escape(link)}">{html.escape(cve_id)}</a>'
+        lines.append(f"{icon} <b>{cve_link}</b>  [{sev}]  {kw_tags}")
 
     return (
         f'📅 <b>Daily CVE Summary — {today}</b>\n\n'
