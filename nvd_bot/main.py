@@ -91,7 +91,8 @@ def process_cve(cve_item: dict, registry: RepoRegistry, gh: GithubClient, llm: L
         return
 
     msg = build_alert_message(cve_item)
-    tgbot.send(msg)
+    sent = tgbot.send(msg)
+    message_id = sent.message_id if sent else None
     _save_seen(cve_id)
 
     watchlist = config.get('watchlist', [])
@@ -102,6 +103,7 @@ def process_cve(cve_item: dict, registry: RepoRegistry, gh: GithubClient, llm: L
             'cve_id': cve_id,
             'severity': severity,
             'keywords': matched_kw,
+            'message_id': message_id,
         })
 
     print(f'[main] {cve_id} ({severity}): {len(matches)} repo match(es)')
@@ -183,7 +185,7 @@ def _daily_summary_job():
         print('[main] No alerts today, skipping summary.')
         return
     msg = build_daily_summary_message(alerts)
-    tgbot.send(msg)
+    tgbot.send(msg, disable_web_page_preview=True)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
