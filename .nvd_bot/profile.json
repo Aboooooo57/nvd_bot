@@ -17,8 +17,8 @@
       "packaging": ">=24.0"
     }
   },
-  "last_commit_sha": "981d3462f1130c6765253ee5a5c7616fa09287ec",
-  "last_scanned_at": "2026-07-06T14:52:01.832264+00:00",
+  "last_commit_sha": "4f57d49b468d8d3b0500b91ba5cbbabcfa9da8ca",
+  "last_scanned_at": "2026-07-06T15:07:10.644467+00:00",
   "enabled": true,
   "overrides": {}
 }
