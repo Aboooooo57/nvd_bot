@@ -85,7 +85,8 @@ class GithubClient:
         return r.status_code in (200, 201, 422)  # 422 = already exists
 
     def commit_file(self, owner: str, repo: str, path: str, content: str,
-                     message: str, branch: str, token: str | None = None) -> bool:
+                     message: str, branch: str, token: str | None = None) -> str | None:
+        """Create or update a file. Returns the new commit's sha on success, None on failure."""
         existing_sha = self.get_file_sha(owner, repo, path, token)
         payload: dict = {
             'message': message,
@@ -102,9 +103,9 @@ class GithubClient:
             timeout=20,
         )
         if r.status_code in (200, 201):
-            return True
+            return r.json().get('commit', {}).get('sha')
         print(f'[github] commit_file failed: {r.status_code} {r.text[:200]}')
-        return False
+        return None
 
     def create_pull_request(self, owner: str, repo: str, title: str, body: str,
                              head: str, base: str, token: str | None = None) -> str | None:

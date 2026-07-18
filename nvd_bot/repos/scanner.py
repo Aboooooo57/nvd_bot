@@ -64,20 +64,27 @@ def scan_repo(profile: RepoProfile, gh: GithubClient, llm=None) -> dict:
 
 
 def _push_profile(profile: RepoProfile, gh: GithubClient, owner: str, repo: str):
-    """Commit .nvd_bot/profile.json into the tracked repo."""
+    """Commit .nvd_bot/profile.json into the tracked repo.
+
+    Sets profile.last_commit_sha to the sha of the commit this push just
+    created, so the next commit-poll cycle recognizes it as already-seen
+    instead of mistaking the bot's own profile update for a new upstream
+    commit and re-scanning/re-pushing forever.
+    """
     import json
     profile_path = config.get('profile_file_path', '.nvd_bot/profile.json')
     safe = profile.to_dict()
     safe.pop('github_token', None)
     content = json.dumps(safe, indent=2)
     default_branch = gh.get_default_branch(owner, repo, token=profile.github_token)
-    ok = gh.commit_file(
+    new_sha = gh.commit_file(
         owner, repo, profile_path, content,
         message='chore: update nvd_bot profile [skip ci]',
         branch=default_branch,
         token=profile.github_token,
     )
-    if ok:
+    if new_sha:
+        profile.last_commit_sha = new_sha
         print(f'[scanner] Pushed profile to {profile.name}:{profile_path}')
     else:
         print(f'[scanner] Failed to push profile to {profile.name}')

@@ -25,7 +25,10 @@ def poll_commits(registry: RepoRegistry, gh: GithubClient):
             sha = gh.get_latest_commit_sha(owner, repo, token=profile.github_token)
             if sha and sha != profile.last_commit_sha:
                 print(f'[scheduler] New commit in {profile.name}: {sha[:8]}')
-                profile.last_commit_sha = sha
+                # scan_repo() pushes an updated profile.json and sets
+                # profile.last_commit_sha to that push's own commit sha —
+                # not to `sha` above — so the next poll doesn't mistake the
+                # bot's own commit for a fresh upstream change and loop forever.
                 scan_repo(profile, gh)
                 registry.update_profile(profile)
         except Exception as e:
