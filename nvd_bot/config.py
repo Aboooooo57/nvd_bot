@@ -19,6 +19,8 @@ TELEGRAM_OWNER_ID: int | None = int(_owner_raw) if _owner_raw.strip().isdigit() 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 DATA_DIR = 'data'
 SEEN_CVES_FILE = 'data/seen_cves.csv'
+DAILY_ALERTS_FILE = 'data/daily_alerts.json'
+POLL_STATE_FILE = 'data/poll_state.json'
 REPOS_DIR = 'data/repos'
 REPO_REGISTRY_FILE = 'data/repos/registry.json'
 CONFIG_FILE = 'data/config.json'
@@ -28,8 +30,21 @@ _DEFAULTS: dict = {
     'nvd_poll_interval_minutes': 5,
     'commit_poll_interval_minutes': 15,
     'daily_summary_time': '23:55',
+    # When False (default) the bot stays quiet on individual CVEs — you only
+    # hear from it once a day via the summary, plus immediately whenever a
+    # security issue is opened on one of your repos. Set True to get a
+    # per-CVE alert message again.
+    'per_cve_alerts': False,
     'severity_threshold': 'MEDIUM',
     'cve_lookback_minutes': 6,
+    # Ceiling on how far back a single catch-up poll will reach after downtime.
+    # NVD rejects windows over 120 days, and an unbounded query after a long
+    # outage would be enormous — past this, the gap is reported instead.
+    'max_catchup_hours': 24,
+    # NVD often publishes a CVE before scoring it. Unscored CVEs that matched
+    # us are re-checked daily until they get a score or age out.
+    'pending_recheck_time': '04:00',
+    'pending_retention_days': 14,
     'seen_cve_limit': 1000,
     'llm_provider': 'openrouter',
     'llm_model': 'gemini-3.5-flash',

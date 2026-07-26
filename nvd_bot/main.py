@@ -1,6 +1,7 @@
 from __future__ import annotations
 import csv
 import html
+import json
 import os
 import re
 import schedule
@@ -9,7 +10,8 @@ import time
 from datetime import datetime, timezone
 
 from nvd_bot import config
-from nvd_bot.nvd.client import get_new_cves
+from nvd_bot.nvd.client import get_new_cves, get_cve_by_id
+from nvd_bot.nvd import poll_state
 from nvd_bot.nvd.filter import is_relevant_to_watchlist, extract_affected_packages
 from nvd_bot.nvd.formatter import build_alert_message, build_daily_summary_message, extract_meta
 from nvd_bot.repos.registry import RepoRegistry
@@ -20,7 +22,9 @@ from nvd_bot import bot as tgbot
 from nvd_bot.scheduler import poll_commits
 from nvd_bot.repos.git_account_store import GitAccountStore
 
-# In-memory daily alert list
+# Alerts accumulated since the last daily summary. Mirrored to disk on every
+# append: the summary is now the primary notification channel, so a restart
+# part-way through the day must not silently swallow it.
 _daily_alerts: list[dict] = []
 _daily_lock = threading.Lock()
 
@@ -64,21 +68,89 @@ def _save_seen(cve_id: str):
         writer.writerows(data)
 
 
+# ── Daily alert accumulation (survives restarts) ──────────────────────────────
+
+def _load_daily_alerts() -> list[dict]:
+    if not os.path.exists(config.DAILY_ALERTS_FILE):
+        return []
+    try:
+        with open(config.DAILY_ALERTS_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except Exception as e:
+        print(f'[main] daily alerts read error: {e}')
+        return []
+
+
+def _write_daily_alerts_unlocked(alerts: list[dict]):
+    """Atomic write — a crash mid-write must not leave a truncated file that
+    costs us the whole day's summary."""
+    try:
+        os.makedirs(config.DATA_DIR, exist_ok=True)
+        tmp = config.DAILY_ALERTS_FILE + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(alerts, f)
+        os.replace(tmp, config.DAILY_ALERTS_FILE)
+    except Exception as e:
+        print(f'[main] daily alerts write error: {e}')
+
+
+def _record_daily_alert(alert: dict):
+    """Upsert by CVE id — a re-checked CVE replaces its earlier PENDING entry
+    rather than appearing in the summary twice."""
+    with _daily_lock:
+        for i, existing in enumerate(_daily_alerts):
+            if existing.get('cve_id') == alert.get('cve_id'):
+                _daily_alerts[i] = alert
+                break
+        else:
+            _daily_alerts.append(alert)
+        _write_daily_alerts_unlocked(_daily_alerts)
+
+
+def _drain_daily_alerts() -> list[dict]:
+    global _daily_alerts
+    with _daily_lock:
+        alerts = list(_daily_alerts)
+        _daily_alerts = []
+        _write_daily_alerts_unlocked([])
+    return alerts
+
+
 def _meets_threshold(severity: str) -> bool:
     thr = config.get('severity_threshold', 'MEDIUM')
     return _SEVERITY_RANK.get((severity or '').upper(), 0) >= _SEVERITY_RANK.get(thr.upper(), 2)
 
 
+def _is_unscored(severity: str) -> bool:
+    """True when NVD hasn't assigned a CVSS severity yet — common for the
+    first few days after publication."""
+    return (severity or '').upper() not in _SEVERITY_RANK
+
+
 # ── Core CVE processing pipeline ──────────────────────────────────────────────
 
 def process_cve(cve_item: dict, registry: RepoRegistry, gh: GithubClient, llm: LLMClient):
+    """Handle a freshly-published CVE, skipping any we've already recorded."""
+    cve_id, _, _, _ = extract_meta(cve_item)
+    if not cve_id:
+        return
+    if cve_id in _load_seen():
+        return
+    _evaluate_cve(cve_item, registry, gh, llm)
+
+
+def _evaluate_cve(cve_item: dict, registry: RepoRegistry, gh: GithubClient,
+                  llm: LLMClient, force: bool = False):
+    """Match a CVE against repos and the watchlist, then notify/act.
+
+    force=True re-runs a CVE already present in seen_cves.csv — used by the
+    pending re-check, where the whole point is to reconsider a CVE now that
+    NVD has finally scored it.
+    """
     from concurrent.futures import ThreadPoolExecutor
     cve_id, description, severity, _ = extract_meta(cve_item)
     if not cve_id:
-        return
-
-    seen = _load_seen()
-    if cve_id in seen:
         return
 
     affected = extract_affected_packages(cve_item)
@@ -87,24 +159,37 @@ def process_cve(cve_item: dict, registry: RepoRegistry, gh: GithubClient, llm: L
     watchlist_hit = is_relevant_to_watchlist(description)
 
     if not matches and not watchlist_hit:
-        _save_seen(cve_id)
+        if not force:
+            _save_seen(cve_id)
+        poll_state.drop_pending(cve_id)
         return
 
-    msg = build_alert_message(cve_item)
-    sent = tgbot.send(msg)
-    message_id = sent.message_id if sent else None
-    _save_seen(cve_id)
+    # Per-CVE alerts are opt-in. By default the CVE is recorded for the daily
+    # summary and nothing is sent now — the only immediate messages are the
+    # "security issue created" notices from _handle_match() below.
+    message_id = None
+    if config.get('per_cve_alerts', False):
+        sent = tgbot.send(build_alert_message(cve_item))
+        message_id = sent.message_id if sent else None
+    if not force:
+        _save_seen(cve_id)
+
+    # No CVSS score yet — keep it on the re-check list so a score assigned
+    # days from now still reaches the severity gate below.
+    if _is_unscored(severity):
+        poll_state.add_pending(cve_id)
+    else:
+        poll_state.drop_pending(cve_id)
 
     watchlist = config.get('watchlist', [])
     matched_kw = [kw for kw in watchlist
                   if re.search(r'(?i)\b' + re.escape(kw) + r'\b', description)]
-    with _daily_lock:
-        _daily_alerts.append({
-            'cve_id': cve_id,
-            'severity': severity,
-            'keywords': matched_kw,
-            'message_id': message_id,
-        })
+    _record_daily_alert({
+        'cve_id': cve_id,
+        'severity': severity,
+        'keywords': matched_kw,
+        'message_id': message_id,
+    })
 
     print(f'[main] {cve_id} ({severity}): {len(matches)} repo match(es)')
 
@@ -176,11 +261,40 @@ def _cve_job(registry, gh, llm):
         time.sleep(1)
 
 
+def _recheck_pending_job(registry, gh, llm):
+    """Re-fetch CVEs that were published without a CVSS score and re-evaluate
+    any that have since been scored."""
+    retention = config.get('pending_retention_days', 14)
+    aged_out = poll_state.prune_pending(retention)
+    if aged_out:
+        print(f'[main] Pending re-check: dropped {len(aged_out)} CVE(s) '
+              f'still unscored after {retention}d: {", ".join(aged_out[:5])}')
+
+    pending = poll_state.list_pending()
+    if not pending:
+        print('[main] Pending re-check: nothing to do.')
+        return
+
+    print(f'[main] Pending re-check: {len(pending)} CVE(s)')
+    scored = 0
+    for cve_id in pending:
+        item = get_cve_by_id(cve_id)
+        if item is None:
+            continue  # transient failure — stays pending, retried tomorrow
+        _, _, severity, _ = extract_meta(item)
+        if _is_unscored(severity):
+            continue
+        print(f'[main] {cve_id} now scored {severity} — re-evaluating')
+        _evaluate_cve(item, registry, gh, llm, force=True)
+        scored += 1
+        time.sleep(1)  # stay well inside NVD rate limits
+
+    if scored:
+        print(f'[main] Pending re-check: {scored} CVE(s) newly scored')
+
+
 def _daily_summary_job():
-    global _daily_alerts
-    with _daily_lock:
-        alerts = list(_daily_alerts)
-        _daily_alerts = []
+    alerts = _drain_daily_alerts()
     if not alerts:
         print('[main] No alerts today, skipping summary.')
         return
@@ -193,6 +307,11 @@ def _daily_summary_job():
 def main():
     config.load()
     print('[main] Config loaded.')
+
+    restored = _load_daily_alerts()
+    if restored:
+        _daily_alerts.extend(restored)
+        print(f'[main] Restored {len(restored)} pending alert(s) for today\'s summary.')
 
     registry = RepoRegistry()
     gh = GithubClient()
@@ -213,12 +332,16 @@ def main():
     commit_interval = config.get('commit_poll_interval_minutes', 15)
     summary_time = config.get('daily_summary_time', '23:55')
 
+    recheck_time = config.get('pending_recheck_time', '04:00')
+
     schedule.every(poll_interval).minutes.do(_cve_job, registry, gh, llm)
     schedule.every(commit_interval).minutes.do(poll_commits, registry, gh)
     schedule.every().day.at(summary_time).do(_daily_summary_job)
+    schedule.every().day.at(recheck_time).do(_recheck_pending_job, registry, gh, llm)
 
     print(f'[main] Scheduled: CVE every {poll_interval}m, '
-          f'commit poll every {commit_interval}m, summary at {summary_time}')
+          f'commit poll every {commit_interval}m, summary at {summary_time}, '
+          f'pending re-check at {recheck_time}')
 
     while True:
         schedule.run_pending()
