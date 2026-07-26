@@ -102,7 +102,24 @@ def _sort_key(alert: dict) -> tuple:
     )
 
 
-def _alert_line(alert: dict) -> str:
+def _short_desc(text: str, limit: int) -> str:
+    """Collapse whitespace and truncate on a word boundary."""
+    if not text:
+        return ''
+    collapsed = ' '.join(text.split())
+    if len(collapsed) <= limit:
+        return collapsed
+    return collapsed[:limit].rsplit(' ', 1)[0] + '…'
+
+
+def _alert_block(alert: dict, repo: str | None = None, indent: str = '') -> list[str]:
+    """One CVE rendered as a small block: the identifier line, what is
+    actually affected, and what the problem is.
+
+    The identifier alone is useless in a digest — you cannot tell a critical
+    RCE in a dependency you ship from an IDE bug that merely mentions your
+    stack in passing.
+    """
     sev = alert.get('severity', 'PENDING')
     icon = _severity_icon(sev)
     cve_id = alert.get('cve_id', '')
@@ -118,7 +135,25 @@ def _alert_line(alert: dict) -> str:
 
     kw_tags = ' '.join(_to_tag(kw) for kw in sorted(alert.get('keywords', [])))
     kw_str = f'  {kw_tags}' if kw_tags else ''
-    return f'{icon} <b>{cve_link}</b>  [{sev}]{extra_str}{kw_str}'
+
+    lines = [f'{indent}{icon} <b>{cve_link}</b>  [{sev}]{extra_str}{kw_str}']
+
+    # What's affected. Inside a repo group, prefer the package as it appears
+    # in that repo — the installed version is the part you act on.
+    detail = (alert.get('repo_packages') or {}).get(repo or '', [])
+    if detail:
+        for entry in detail:
+            lines.append(f'{indent}    📦 <code>{html.escape(entry)}</code>')
+    elif alert.get('packages'):
+        pkgs = ', '.join(alert['packages'])
+        lines.append(f'{indent}    📦 <code>{html.escape(pkgs)}</code>')
+
+    limit = config.get('summary_description_chars', 170)
+    desc = _short_desc(alert.get('title', ''), limit)
+    if desc:
+        lines.append(f'{indent}    <i>{html.escape(desc)}</i>')
+
+    return lines
 
 
 def _chunk(header: str, blocks: list[list[str]], footer: str) -> list[str]:
@@ -175,13 +210,13 @@ def build_daily_summary_message(daily_alerts: list[dict]) -> list[str]:
         for repo in sorted(by_repo):
             block.append(f'\n<b>{html.escape(repo)}</b>')
             for alert in sorted(by_repo[repo], key=_sort_key):
-                block.append(f'  {_alert_line(alert)}')
+                block.extend(_alert_block(alert, repo=repo, indent='  '))
         blocks.append(block)
 
     if watch_only:
         block = ['', '📋 <b>Watchlist only</b>']
         for alert in sorted(watch_only, key=_sort_key):
-            block.append(_alert_line(alert))
+            block.extend(_alert_block(alert))
         blocks.append(block)
 
     all_keywords: set[str] = set()

@@ -33,6 +33,10 @@ _DEFAULTS: dict = {
     'nvd_poll_interval_minutes': 5,
     'commit_poll_interval_minutes': 15,
     'daily_summary_time': '23:55',
+    # How much CVE description to show per entry in the digest. The digest is
+    # the primary channel now, so each line has to say what the problem
+    # actually is; raise for more context, lower for a denser list.
+    'summary_description_chars': 170,
     # When False (default) the bot stays quiet on individual CVEs — you only
     # hear from it once a day via the summary, plus immediately whenever a
     # security issue is opened on one of your repos. Set True to get a

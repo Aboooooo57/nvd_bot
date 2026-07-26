@@ -181,3 +181,89 @@ def test_all_chunks_are_sent():
         main._record_daily_alert(_alert(f'CVE-2026-{i:05d}', 'HIGH', repos=['me/api']))
     main.send_summary(drain=True)
     assert len(_sent) > 1
+
+
+# ── content: what's affected and what the problem is ──────────────────────────
+
+def test_watchlist_entry_shows_affected_product_and_description():
+    """The complaint this fixes: a bare CVE id says nothing about the actual
+    problem once per-CVE alerts are off."""
+    from nvd_bot.nvd.formatter import build_daily_summary_message
+    _fresh()
+    body = '\n'.join(build_daily_summary_message([
+        dict(_alert('CVE-1', 'HIGH'), packages=['webstorm'],
+             title='In JetBrains WebStorm before 2026.2 arbitrary code execution was possible'),
+    ]))
+    assert 'webstorm' in body, 'must say what is affected'
+    assert 'arbitrary code execution' in body, 'must say what the problem is'
+
+
+def test_repo_entry_shows_installed_and_vulnerable_versions():
+    from nvd_bot.nvd.formatter import build_daily_summary_message
+    _fresh()
+    body = '\n'.join(build_daily_summary_message([
+        dict(_alert('CVE-1', 'CRITICAL', repos=['me/api']),
+             repo_packages={'me/api': ['express 4.17.1 — vulnerable: <4.19.2']},
+             packages=['express'], title='Prototype pollution in express.'),
+    ]))
+    assert 'express 4.17.1' in body, 'the installed version is the actionable part'
+    assert '4.19.2' in body
+
+
+def test_repo_detail_preferred_over_generic_package_list():
+    from nvd_bot.nvd.formatter import build_daily_summary_message
+    _fresh()
+    body = '\n'.join(build_daily_summary_message([
+        dict(_alert('CVE-1', 'HIGH', repos=['me/api']),
+             repo_packages={'me/api': ['django 4.0.1 — vulnerable: <4.2.1']},
+             packages=['django'], title='SQL injection.'),
+    ]))
+    assert 'django 4.0.1' in body
+    assert body.count('📦') == 1, 'should not print both the detail and the bare name'
+
+
+def test_description_is_truncated_on_a_word_boundary():
+    from nvd_bot import config
+    from nvd_bot.nvd.formatter import build_daily_summary_message
+    _fresh()
+    config.set('summary_description_chars', 40)
+    body = '\n'.join(build_daily_summary_message([
+        dict(_alert('CVE-1', 'HIGH'),
+             title='A very long description that keeps going well past the configured limit'),
+    ]))
+    assert '…' in body
+    assert 'configured' not in body
+    assert 'A very long description' in body
+    config.set('summary_description_chars', 170)
+
+
+def test_missing_description_and_packages_render_cleanly():
+    from nvd_bot.nvd.formatter import build_daily_summary_message
+    _fresh()
+    body = '\n'.join(build_daily_summary_message([_alert('CVE-1', 'HIGH')]))
+    assert 'None' not in body
+    assert '📦' not in body
+
+
+def test_html_in_description_is_escaped():
+    from nvd_bot.nvd.formatter import build_daily_summary_message
+    _fresh()
+    body = '\n'.join(build_daily_summary_message([
+        dict(_alert('CVE-1', 'HIGH'), title='Fails when <script> is passed to eval()'),
+    ]))
+    assert '&lt;script&gt;' in body, 'raw tags would break Telegram HTML parsing'
+
+
+def test_detailed_digest_still_chunks_under_the_limit():
+    from nvd_bot.nvd.formatter import build_daily_summary_message, _TELEGRAM_LIMIT
+    _fresh()
+    alerts = [dict(_alert(f'CVE-2026-{i:05d}', 'HIGH', repos=['me/api']),
+                   packages=['django'],
+                   repo_packages={'me/api': [f'django 4.0.{i} — vulnerable: <4.2.1']},
+                   title='A long description ' * 10)
+              for i in range(120)]
+    msgs = build_daily_summary_message(alerts)
+    assert all(len(m) <= _TELEGRAM_LIMIT for m in msgs)
+    body = '\n'.join(msgs)
+    for i in range(120):
+        assert f'CVE-2026-{i:05d}' in body

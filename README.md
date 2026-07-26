@@ -194,6 +194,7 @@ Settings are stored in `data/config.json` (git-ignored — it's per-deployment r
 | `seen_cve_limit` | `1000` | Max CVE IDs to remember (deduplication) |
 | `watchlist` | `[python, node, linux, ...]` | Keywords matched against CVE descriptions |
 | `daily_summary_time` | `23:55` | Time for daily summary message (HH:MM) |
+| `summary_description_chars` | `170` | How much CVE description each digest entry shows |
 | `llm_provider` | `openrouter` | `openrouter`, `litellm_proxy`, or `gemini` (usually auto-detected — see above) |
 | `llm_model` | `gemini-3.5-flash` | Model identifier — must match a model your active provider actually serves |
 | `llm_max_tokens` | `2000` | Max tokens per LLM response |
@@ -211,7 +212,15 @@ Example: raise the severity threshold so only high-severity CVEs create issues:
 
 By default the bot is quiet. You hear from it in exactly three situations:
 
-1. **The daily digest** at `daily_summary_time`, grouped into CVEs that affect your tracked repos and watchlist-only matches, sorted by exploitation signal then severity.
+1. **The daily digest** at `daily_summary_time`, grouped into CVEs that affect your tracked repos and watchlist-only matches, sorted by exploitation signal then severity. Each entry names the affected product and summarises the vulnerability — under a tracked repo it shows the installed version against the vulnerable range:
+
+   ```
+   me/api
+     🚨 CVE-2026-47668  [CRITICAL]  EPSS 0.72  #js #node
+         📦 express 4.17.1 — vulnerable: <4.19.2
+         A prototype pollution flaw in express allows an attacker to inject
+         properties onto Object.prototype via a crafted query string…
+   ```
 2. **A security issue opened** on one of your repos, reported the moment it happens.
 3. **An urgent CVE** — `CRITICAL`, or anything listed in CISA KEV — which bypasses the digest entirely.
 

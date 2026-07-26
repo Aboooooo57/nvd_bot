@@ -204,6 +204,20 @@ def _evaluate_cve(cve_item: dict, registry: RepoRegistry, gh: GithubClient,
     watchlist = config.get('watchlist', [])
     matched_kw = [kw for kw in watchlist
                   if re.search(r'(?i)\b' + re.escape(kw) + r'\b', description)]
+    # Everything the digest needs to be readable on its own. Without the
+    # affected product and a description, a summary line is just an opaque
+    # identifier — you can't tell an RCE in something you ship from an IDE
+    # bug that merely name-drops your stack.
+    repo_packages: dict[str, list[str]] = {}
+    for m in matches:
+        entries = []
+        for pkg in m.matched_packages:
+            ver = m.current_versions.get(pkg, 'unknown')
+            specs = ', '.join(m.affected_specs.get(pkg, [])) or 'unknown range'
+            entries.append(f'{pkg} {ver} — vulnerable: {specs}')
+        if entries:
+            repo_packages[m.repo.name] = entries
+
     _record_daily_alert({
         'cve_id': cve_id,
         'severity': severity,
@@ -212,6 +226,9 @@ def _evaluate_cve(cve_item: dict, registry: RepoRegistry, gh: GithubClient,
         'kev': signals.get('kev'),
         'epss': signals.get('epss'),
         'repos': [m.repo.name for m in matches],
+        'packages': sorted(affected)[:4] if affected else [],
+        'repo_packages': repo_packages,
+        'title': ' '.join((description or '').split())[:400],
     })
 
     print(f'[main] {cve_id} ({severity}){" [KEV]" if signals.get("kev") else ""}: '
