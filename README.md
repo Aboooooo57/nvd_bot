@@ -50,7 +50,12 @@ Edit `.env` and fill in your values (see the table below).
 ### 2. Start the bot
 
 ```bash
-docker compose up -d
+./deploy.sh
+```
+
+This stamps the image with the commit it was built from, so `/version` can tell you exactly what's running (and marks it `-dirty` if the working tree had uncommitted changes). Plain `docker compose up -d --build` works too — `/version` just won't know the commit.
+
+```bash
 docker compose logs -f
 ```
 
@@ -125,6 +130,7 @@ GITHUB_OAUTH_CLIENT_SECRET=
 | `/removekeyword <word>` | Remove a watchlist keyword |
 | `/llmcheck [model]` | Test the LLM connection and measure latency |
 | `/status` | System status overview |
+| `/version` | Show the running version, commit, and build date |
 | `/summary` | Send the CVE digest now and clear the queue |
 | `/summary peek` | Preview the digest without clearing it |
 | `/adduser <telegram-id>` | Grant bot access to a user (owner only) |

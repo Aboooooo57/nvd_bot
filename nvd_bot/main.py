@@ -397,6 +397,9 @@ def _daily_summary_job():
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
+    from nvd_bot.version import version_string
+    print(f'[main] NVD Bot {version_string()} starting.')
+
     config.load()
     print('[main] Config loaded.')
 

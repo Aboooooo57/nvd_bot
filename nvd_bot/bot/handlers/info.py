@@ -29,8 +29,9 @@ def register():
 
         # With per-CVE alerts off, silence is the normal state — these numbers
         # are the only way to tell a quiet day from a broken bot.
+        from nvd_bot.version import version_string
         send(
-            f'🤖 <b>NVD Bot Status</b>\n\n'
+            f'🤖 <b>NVD Bot Status</b>  <code>{html.escape(version_string())}</code>\n\n'
             f'📦 Tracked repos: {len(repos)}\n'
             f'🔔 Alert mode: <b>{mode}</b> (immediate at {html.escape(str(immediate))}'
             f'{", KEV" if config.get("immediate_on_kev", True) else ""})\n'
@@ -45,6 +46,14 @@ def register():
             f'⏱ Commit poll: every {config.get("commit_poll_interval_minutes")} min\n'
             f'📅 Summary at {config.get("daily_summary_time")}'
         )
+
+    @state.bot.message_handler(commands=['version'])
+    def cmd_version(msg: Message):
+        if not _authorized(msg): return
+        from nvd_bot import version as ver
+        rows = '\n'.join(f'{label}: <code>{html.escape(value)}</code>'
+                         for label, value in ver.build_details())
+        send(f'🏷 <b>NVD Bot</b>\n\n{rows}')
 
     @state.bot.message_handler(commands=['summary'])
     def cmd_summary(msg: Message):
@@ -108,8 +117,9 @@ def register():
     @state.bot.message_handler(commands=['help', 'start'])
     def cmd_help(msg: Message):
         if not _authorized(msg): return
+        from nvd_bot.version import version_string
         send(
-            '<b>NVD Bot Commands</b>\n\n'
+            f'<b>NVD Bot Commands</b>  <code>{html.escape(version_string())}</code>\n\n'
             '<b>Repo Management</b>\n'
             '/addrepo &lt;url&gt; [token] — Track a GitHub repo\n'
             '/removerepo &lt;id&gt; — Stop tracking a repo\n'
@@ -124,6 +134,7 @@ def register():
             '/removekeyword &lt;word&gt; — Remove watchlist keyword\n\n'
             '<b>Info</b>\n'
             '/status — System status overview\n'
+            '/version — Show the running version and commit\n'
             '/summary — Send the CVE digest now (clears the queue)\n'
             '/summary peek — Preview it without clearing\n'
             '/llmcheck [model] — Test LLM connection\n\n'

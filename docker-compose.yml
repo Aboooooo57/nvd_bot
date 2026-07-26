@@ -3,6 +3,11 @@ services:
     build:
       context: .
       network: host
+      args:
+        # Set by deploy.sh. Falls back to "unknown", which just means the
+        # commit is omitted from /version — never a build failure.
+        GIT_SHA: ${GIT_SHA:-unknown}
+        BUILD_DATE: ${BUILD_DATE:-unknown}
     container_name: nvd_bot
     restart: unless-stopped
     network_mode: "host"
