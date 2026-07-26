@@ -22,6 +22,8 @@ SEEN_CVES_FILE = 'data/seen_cves.csv'
 DAILY_ALERTS_FILE = 'data/daily_alerts.json'
 POLL_STATE_FILE = 'data/poll_state.json'
 ISSUE_LEDGER_FILE = 'data/issue_ledger.json'
+KEV_CACHE_FILE = 'data/kev.json'
+EPSS_CACHE_FILE = 'data/epss.json'
 REPOS_DIR = 'data/repos'
 REPO_REGISTRY_FILE = 'data/repos/registry.json'
 CONFIG_FILE = 'data/config.json'
@@ -36,7 +38,20 @@ _DEFAULTS: dict = {
     # security issue is opened on one of your repos. Set True to get a
     # per-CVE alert message again.
     'per_cve_alerts': False,
+    # Escape hatch from the digest: these go out the moment they're seen, even
+    # with per_cve_alerts off, so an actively-exploited flaw doesn't sit
+    # unread until the nightly summary.
+    'immediate_severity': 'CRITICAL',
+    'immediate_on_kev': True,
     'severity_threshold': 'MEDIUM',
+    # KEV (confirmed exploitation) and EPSS (probability of exploitation)
+    # annotate and rank CVEs. min_epss_for_issue is a filter and ships off:
+    # raise it only once you've watched real scores for a while, since
+    # anything below it is dropped without trace.
+    'enrichment_enabled': True,
+    'kev_refresh_hours': 24,
+    'epss_cache_hours': 24,
+    'min_epss_for_issue': 0.0,
     'cve_lookback_minutes': 6,
     # Ceiling on how far back a single catch-up poll will reach after downtime.
     # NVD rejects windows over 120 days, and an unbounded query after a long

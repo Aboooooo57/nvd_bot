@@ -14,6 +14,7 @@ from nvd_bot.nvd.client import get_new_cves, get_cve_by_id
 from nvd_bot.nvd import poll_state
 from nvd_bot.nvd.filter import is_relevant_to_watchlist, extract_affected_packages
 from nvd_bot.nvd.formatter import build_alert_message, build_daily_summary_message, extract_meta
+from nvd_bot.nvd import enrichment
 from nvd_bot.repos.registry import RepoRegistry
 from nvd_bot.repos.github_client import GithubClient
 from nvd_bot.repos.issue_ledger import IssueLedger
@@ -127,6 +128,17 @@ def _meets_threshold(severity: str) -> bool:
     return _SEVERITY_RANK.get((severity or '').upper(), 0) >= _SEVERITY_RANK.get(thr.upper(), 2)
 
 
+def _is_immediate(severity: str, enrichment: dict) -> bool:
+    """Should this bypass the digest and go out now?"""
+    if config.get('immediate_on_kev', True) and enrichment.get('kev'):
+        return True
+    bar = config.get('immediate_severity', 'CRITICAL')
+    if not bar:
+        return False
+    return (_SEVERITY_RANK.get((severity or '').upper(), 0)
+            >= _SEVERITY_RANK.get(str(bar).upper(), 99))
+
+
 def _is_unscored(severity: str) -> bool:
     """True when NVD hasn't assigned a CVSS severity yet — common for the
     first few days after publication."""
@@ -169,12 +181,15 @@ def _evaluate_cve(cve_item: dict, registry: RepoRegistry, gh: GithubClient,
         poll_state.drop_pending(cve_id)
         return
 
-    # Per-CVE alerts are opt-in. By default the CVE is recorded for the daily
-    # summary and nothing is sent now — the only immediate messages are the
-    # "security issue created" notices from _handle_match() below.
+    signals = enrichment.enrich(cve_id)
+
+    # Per-CVE alerts are opt-in, but confirmed-exploited or top-severity CVEs
+    # still break through immediately — waiting until 23:55 to mention one of
+    # those would defeat the point of watching at all.
+    urgent = _is_immediate(severity, signals)
     message_id = None
-    if config.get('per_cve_alerts', False):
-        sent = tgbot.send(build_alert_message(cve_item))
+    if config.get('per_cve_alerts', False) or urgent:
+        sent = tgbot.send(build_alert_message(cve_item, signals, urgent=urgent))
         message_id = sent.message_id if sent else None
     if not force:
         _save_seen(cve_id)
@@ -194,20 +209,33 @@ def _evaluate_cve(cve_item: dict, registry: RepoRegistry, gh: GithubClient,
         'severity': severity,
         'keywords': matched_kw,
         'message_id': message_id,
+        'kev': signals.get('kev'),
+        'epss': signals.get('epss'),
+        'repos': [m.repo.name for m in matches],
     })
 
-    print(f'[main] {cve_id} ({severity}): {len(matches)} repo match(es)')
+    print(f'[main] {cve_id} ({severity}){" [KEV]" if signals.get("kev") else ""}: '
+          f'{len(matches)} repo match(es)')
 
-    if matches and not _meets_threshold(severity):
+    if not matches:
+        return
+
+    min_epss = config.get('min_epss_for_issue', 0.0) or 0.0
+    epss = signals.get('epss')
+    if not _meets_threshold(severity):
         print(f'[main] {cve_id}: below severity threshold '
               f'({config.get("severity_threshold", "MEDIUM")}) — no issue created')
-    elif matches:
+    elif min_epss > 0 and epss is not None and epss < min_epss and not signals.get('kev'):
+        # Only reachable if the operator opted in by raising min_epss_for_issue.
+        print(f'[main] {cve_id}: EPSS {epss:.3f} below min_epss_for_issue '
+              f'({min_epss}) — no issue created')
+    else:
         executor = ThreadPoolExecutor(max_workers=2)
         for match in matches:
-            executor.submit(_handle_match, match, cve_item, gh)
+            executor.submit(_handle_match, match, cve_item, gh, signals)
 
 
-def _handle_match(match, cve_item: dict, gh: GithubClient):
+def _handle_match(match, cve_item: dict, gh: GithubClient, signals: dict | None = None):
     from nvd_bot.repos.scanner import _split_name
     cve_id, description, severity, _ = extract_meta(cve_item)
     owner, repo_name = _split_name(match.repo.name)
@@ -249,10 +277,26 @@ def _handle_match(match, cve_item: dict, gh: GithubClient):
 
     source_files = sorted(set(match.source_files.values()))
 
-    title = f'Security: {cve_id} affects {", ".join(match.matched_packages[:3])}'
+    signals = signals or {}
+    exploit_lines = []
+    if signals.get('kev'):
+        exploit_lines.append(
+            '> ⚡ **Listed in the CISA Known Exploited Vulnerabilities '
+            'catalogue — confirmed exploited in the wild.**')
+    if signals.get('epss') is not None:
+        pct = signals.get('epss_percentile')
+        pct_str = f' (higher than {pct:.1%} of all CVEs)' if pct is not None else ''
+        exploit_lines.append(
+            f'EPSS: **{signals["epss"]:.3f}** probability of exploitation '
+            f'in the next 30 days{pct_str}.')
+    exploit_block = ('\n\n'.join(exploit_lines) + '\n\n') if exploit_lines else ''
+
+    kev_tag = ' [KEV]' if signals.get('kev') else ''
+    title = f'Security{kev_tag}: {cve_id} affects {", ".join(match.matched_packages[:3])}'
     body = (
         f'## {cve_id} — {severity}\n\n'
-        f'{description}\n\n'
+        + exploit_block
+        + f'{description}\n\n'
         f'### Affected packages\n\n'
         + '\n'.join(pkg_lines) + '\n\n'
         + f'### Source files\n\n'

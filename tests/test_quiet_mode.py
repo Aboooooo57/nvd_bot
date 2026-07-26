@@ -107,7 +107,9 @@ def test_opting_back_in_restores_per_cve_alerts():
     from nvd_bot import config, main
     _fresh()
     config.set('per_cve_alerts', True)
-    main.process_cve(_cve('CVE-2026-3333', 'CRITICAL', 'flask path traversal'),
+    # HIGH, so it is the opt-in flag doing the work rather than the
+    # immediate_severity escape hatch (which fires at CRITICAL).
+    main.process_cve(_cve('CVE-2026-3333', 'HIGH', 'flask path traversal'),
                      _Reg(), None, None)
     assert len(_sent) == 1
     assert 'New CVE Alert' in _sent[0]

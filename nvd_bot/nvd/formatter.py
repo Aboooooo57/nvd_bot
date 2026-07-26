@@ -37,9 +37,11 @@ def extract_meta(cve_item: dict) -> tuple[str, str, str, str]:
     return cve_id, description, severity, vuln_status
 
 
-def build_alert_message(cve_item: dict) -> str:
+def build_alert_message(cve_item: dict, signals: dict | None = None,
+                        urgent: bool = False) -> str:
     cve_id, description, severity, vuln_status = extract_meta(cve_item)
     watchlist = config.get('watchlist', [])
+    signals = signals or {}
 
     if len(description) > 400:
         description = description[:397] + '...'
@@ -51,11 +53,21 @@ def build_alert_message(cve_item: dict) -> str:
         safe_desc = re.sub(pattern, r'<b>\1</b>', safe_desc)
 
     icon = _severity_icon(severity)
+    header = '⚡ <b>Exploited in the wild</b>' if signals.get('kev') else (
+        '🔴 <b>Urgent CVE Alert</b>' if urgent else '<b>New CVE Alert</b>')
+
+    exploit_line = ''
+    if signals.get('kev'):
+        exploit_line = '⚡ <b>In CISA KEV — confirmed exploited</b>\n'
+    if signals.get('epss') is not None:
+        exploit_line += f'📈 EPSS: <b>{signals["epss"]:.3f}</b>\n'
+
     return (
-        f'{icon} <b>New CVE Alert</b>\n\n'
+        f'{icon} {header}\n\n'
         f'🆔 <b>{html.escape(cve_id)}</b>\n'
         f'📊 Status: <b>{html.escape(vuln_status)}</b>\n'
-        f'🔥 Severity: <b>{html.escape(severity)}</b>\n\n'
+        f'🔥 Severity: <b>{html.escape(severity)}</b>\n'
+        f'{exploit_line}\n'
         f'{safe_desc}\n\n'
         f"<a href='https://nvd.nist.gov/vuln/detail/{cve_id}'>More Info</a>"
     )
