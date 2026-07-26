@@ -120,6 +120,24 @@ class GithubClient:
         print(f'[github] create_pr failed: {r.status_code} {r.text[:200]}')
         return None
 
+    def comment_on_issue(self, owner: str, repo: str, issue_url: str, body: str,
+                         token: str | None = None) -> bool:
+        """Append a comment to an existing issue, identified by its html_url."""
+        number = issue_url.rstrip('/').split('/')[-1]
+        if not number.isdigit():
+            print(f'[github] cannot parse issue number from {issue_url}')
+            return False
+        r = requests.post(
+            f'{self._API}/repos/{owner}/{repo}/issues/{number}/comments',
+            headers=self._headers(token),
+            json={'body': body},
+            timeout=20,
+        )
+        if r.status_code in (200, 201):
+            return True
+        print(f'[github] comment_on_issue failed: {r.status_code} {r.text[:200]}')
+        return False
+
     def create_issue(self, owner: str, repo: str, title: str, body: str,
                      labels: list[str] | None = None, token: str | None = None) -> str | None:
         payload: dict = {'title': title, 'body': body}

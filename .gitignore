@@ -24,6 +24,7 @@ Thumbs.db
 data/seen_cves.csv
 data/daily_alerts.json
 data/poll_state.json
+data/issue_ledger.json
 data/pending_fixes.json
 data/user_git_accounts.json
 data/config.json

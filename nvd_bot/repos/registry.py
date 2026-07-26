@@ -72,7 +72,11 @@ class RepoRegistry:
             path = self._profile_path(repo_id)
             if os.path.exists(path):
                 os.remove(path)
-            return True
+        # Outside the lock: untracking a repo should also clear its issue
+        # history, so re-adding it later doesn't silently suppress alerts.
+        from nvd_bot.repos.issue_ledger import IssueLedger
+        IssueLedger().forget_repo(repo_id)
+        return True
 
     def get_repo(self, repo_id: str) -> RepoProfile | None:
         with self._lock:

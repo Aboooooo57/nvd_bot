@@ -16,6 +16,7 @@ from nvd_bot.nvd.filter import is_relevant_to_watchlist, extract_affected_packag
 from nvd_bot.nvd.formatter import build_alert_message, build_daily_summary_message, extract_meta
 from nvd_bot.repos.registry import RepoRegistry
 from nvd_bot.repos.github_client import GithubClient
+from nvd_bot.repos.issue_ledger import IssueLedger
 from nvd_bot.fixes.llm_client import LLMClient
 from nvd_bot.matching.matcher import match_cve_to_repos
 from nvd_bot import bot as tgbot
@@ -29,6 +30,10 @@ _daily_alerts: list[dict] = []
 _daily_lock = threading.Lock()
 
 _SEVERITY_RANK = {'LOW': 1, 'MEDIUM': 2, 'HIGH': 3, 'CRITICAL': 4}
+
+# Which (repo, CVE) pairs already have an issue — keeps re-detections from
+# opening duplicates.
+_ledger = IssueLedger()
 
 
 # ── CSV deduplication ─────────────────────────────────────────────────────────
@@ -209,6 +214,32 @@ def _handle_match(match, cve_item: dict, gh: GithubClient):
     if not owner:
         return
 
+    # Already reported on this repo? Don't open a second issue for the same
+    # vulnerability — but if the severity has since been revised upward, say
+    # so on the existing issue.
+    existing = _ledger.get(match.repo.id, cve_id)
+    if existing:
+        old_sev = existing.get('severity', '')
+        if _SEVERITY_RANK.get(severity.upper(), 0) > _SEVERITY_RANK.get(old_sev.upper(), 0):
+            print(f'[main] {cve_id} in {match.repo.name}: {old_sev} → {severity}, commenting')
+            gh.comment_on_issue(
+                owner, repo_name, existing['issue_url'],
+                f'**Severity updated: {old_sev} → {severity}**\n\n'
+                f'NVD has revised the score for {cve_id}.\n\n'
+                f'*Updated automatically by NVD Bot*',
+                token=match.repo.github_token,
+            )
+            _ledger.update_severity(match.repo.id, cve_id, severity)
+            tgbot.send(
+                f'🔺 <b>Severity raised</b> for <code>{html.escape(cve_id)}</code> '
+                f'in <b>{html.escape(match.repo.name)}</b>: '
+                f'{html.escape(old_sev)} → {html.escape(severity)}\n'
+                f'<a href="{html.escape(existing["issue_url"])}">View Issue →</a>'
+            )
+        else:
+            print(f'[main] {cve_id} already reported in {match.repo.name} — skipping')
+        return
+
     pkg_lines = []
     for pkg in match.matched_packages:
         ver = match.current_versions.get(pkg, 'unknown')
@@ -235,6 +266,7 @@ def _handle_match(match, cve_item: dict, gh: GithubClient):
     issue_url = gh.create_issue(owner, repo_name, title, body,
                                 labels=['security'], token=token)
     if issue_url:
+        _ledger.record(match.repo.id, cve_id, issue_url, severity)
         tgbot.send(
             f'🔒 <b>Security issue created</b> in <b>{html.escape(match.repo.name)}</b>\n'
             f'CVE: <code>{html.escape(cve_id)}</code> | Severity: {html.escape(severity)}\n'
