@@ -84,32 +84,109 @@ def _source_link(cve_id: str, message_id: int | None) -> str:
     return f'https://nvd.nist.gov/vuln/detail/{cve_id}'
 
 
-def build_daily_summary_message(daily_alerts: list[dict]) -> str:
+_SEVERITY_ORDER = {'CRITICAL': 4, 'HIGH': 3, 'MEDIUM': 2, 'LOW': 1}
+_TELEGRAM_LIMIT = 4096
+
+
+def _to_tag(kw: str) -> str:
+    return '#' + kw.replace(' ', '_').replace('.', '').replace('-', '')
+
+
+def _sort_key(alert: dict) -> tuple:
+    """Most urgent first: confirmed exploited, then severity, then EPSS."""
+    return (
+        0 if alert.get('kev') else 1,
+        -_SEVERITY_ORDER.get((alert.get('severity') or '').upper(), 0),
+        -(alert.get('epss') or 0.0),
+        alert.get('cve_id', ''),
+    )
+
+
+def _alert_line(alert: dict) -> str:
+    sev = alert.get('severity', 'PENDING')
+    icon = _severity_icon(sev)
+    cve_id = alert.get('cve_id', '')
+    link = _source_link(cve_id, alert.get('message_id'))
+    cve_link = f'<a href="{html.escape(link)}">{html.escape(cve_id)}</a>'
+
+    extras = []
+    if alert.get('kev'):
+        extras.append('⚡KEV')
+    if alert.get('epss') is not None:
+        extras.append(f'EPSS {alert["epss"]:.2f}')
+    extra_str = ('  ' + '  '.join(extras)) if extras else ''
+
+    kw_tags = ' '.join(_to_tag(kw) for kw in sorted(alert.get('keywords', [])))
+    kw_str = f'  {kw_tags}' if kw_tags else ''
+    return f'{icon} <b>{cve_link}</b>  [{sev}]{extra_str}{kw_str}'
+
+
+def _chunk(header: str, blocks: list[list[str]], footer: str) -> list[str]:
+    """Pack blocks into messages under Telegram's 4096-char limit, splitting
+    only on whole lines so HTML tags stay balanced. A digest that grew past
+    the limit would otherwise fail to send entirely — and with per-CVE alerts
+    off, that is the whole day's notification gone."""
+    messages: list[str] = []
+    current = header
+
+    for block in blocks:
+        for line in block:
+            candidate = current + '\n' + line
+            if len(candidate) + len(footer) > _TELEGRAM_LIMIT:
+                messages.append(current)
+                current = line
+            else:
+                current = candidate
+
+    if footer and len(current) + len(footer) + 2 <= _TELEGRAM_LIMIT:
+        current += '\n\n' + footer
+    elif footer:
+        messages.append(current)
+        current = footer
+
+    messages.append(current)
+    return [m for m in messages if m.strip()]
+
+
+def build_daily_summary_message(daily_alerts: list[dict]) -> list[str]:
+    """Render the digest as one or more Telegram-sized messages."""
     today = datetime.now().strftime('%Y-%m-%d')
-    count = len(daily_alerts)
+    total = len(daily_alerts)
+
+    affecting = [a for a in daily_alerts if a.get('repos')]
+    watch_only = [a for a in daily_alerts if not a.get('repos')]
+    kev_count = sum(1 for a in daily_alerts if a.get('kev'))
+
+    header = f'📅 <b>Daily CVE Summary — {today}</b>\n\n🔍 <b>{total}</b> alert(s)'
+    if affecting:
+        header += f' · <b>{len(affecting)}</b> affecting your repos'
+    if kev_count:
+        header += f' · ⚡ <b>{kev_count}</b> exploited'
+
+    blocks: list[list[str]] = []
+
+    if affecting:
+        by_repo: dict[str, list[dict]] = {}
+        for alert in affecting:
+            for repo in alert.get('repos', []):
+                by_repo.setdefault(repo, []).append(alert)
+
+        block = ['', '🔴 <b>Affects your repos</b>']
+        for repo in sorted(by_repo):
+            block.append(f'\n<b>{html.escape(repo)}</b>')
+            for alert in sorted(by_repo[repo], key=_sort_key):
+                block.append(f'  {_alert_line(alert)}')
+        blocks.append(block)
+
+    if watch_only:
+        block = ['', '📋 <b>Watchlist only</b>']
+        for alert in sorted(watch_only, key=_sort_key):
+            block.append(_alert_line(alert))
+        blocks.append(block)
 
     all_keywords: set[str] = set()
     for alert in daily_alerts:
         all_keywords.update(alert.get('keywords', []))
+    footer = ' '.join(_to_tag(kw) for kw in sorted(all_keywords))
 
-    def to_tag(kw: str) -> str:
-        return '#' + kw.replace(' ', '_').replace('.', '').replace('-', '')
-
-    hashtags = ' '.join(to_tag(kw) for kw in sorted(all_keywords))
-
-    lines = []
-    for alert in daily_alerts:
-        sev = alert['severity']
-        icon = _severity_icon(sev)
-        kw_tags = ' '.join(to_tag(kw) for kw in sorted(alert.get('keywords', [])))
-        cve_id = alert['cve_id']
-        link = _source_link(cve_id, alert.get('message_id'))
-        cve_link = f'<a href="{html.escape(link)}">{html.escape(cve_id)}</a>'
-        lines.append(f"{icon} <b>{cve_link}</b>  [{sev}]  {kw_tags}")
-
-    return (
-        f'📅 <b>Daily CVE Summary — {today}</b>\n\n'
-        f'🔍 <b>{count}</b> alert(s) sent today:\n\n'
-        + '\n'.join(lines)
-        + f'\n\n{hashtags}'
-    )
+    return _chunk(header, blocks, footer)

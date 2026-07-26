@@ -369,13 +369,29 @@ def _recheck_pending_job(registry, gh, llm):
         print(f'[main] Pending re-check: {scored} CVE(s) newly scored')
 
 
-def _daily_summary_job():
-    alerts = _drain_daily_alerts()
+def send_summary(drain: bool = True) -> bool:
+    """Render and send the digest. Returns False if there was nothing to send.
+
+    drain=False previews without clearing, so a mid-day /summary peek can't
+    cost you the scheduled message.
+    """
+    if drain:
+        alerts = _drain_daily_alerts()
+    else:
+        with _daily_lock:
+            alerts = list(_daily_alerts)
+
     if not alerts:
+        return False
+
+    for chunk in build_daily_summary_message(alerts):
+        tgbot.send(chunk, disable_web_page_preview=True)
+    return True
+
+
+def _daily_summary_job():
+    if not send_summary(drain=True):
         print('[main] No alerts today, skipping summary.')
-        return
-    msg = build_daily_summary_message(alerts)
-    tgbot.send(msg, disable_web_page_preview=True)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -395,6 +411,8 @@ def main():
     git_store = GitAccountStore()
 
     bot = tgbot.init(registry, gh, llm, git_store)
+    from nvd_bot.bot import state as bot_state
+    bot_state._summary_job = send_summary
     threading.Thread(
         target=lambda: bot.infinity_polling(none_stop=True, timeout=60),
         daemon=True,

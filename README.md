@@ -125,6 +125,8 @@ GITHUB_OAUTH_CLIENT_SECRET=
 | `/removekeyword <word>` | Remove a watchlist keyword |
 | `/llmcheck [model]` | Test the LLM connection and measure latency |
 | `/status` | System status overview |
+| `/summary` | Send the CVE digest now and clear the queue |
+| `/summary peek` | Preview the digest without clearing it |
 | `/adduser <telegram-id>` | Grant bot access to a user (owner only) |
 | `/removeuser <telegram-id>` | Revoke bot access from a user (owner only) |
 | `/help` | Show all commands |
@@ -170,9 +172,19 @@ Settings are stored in `data/config.json` (git-ignored — it's per-deployment r
 | Key | Default | Description |
 |---|---|---|
 | `nvd_poll_interval_minutes` | `5` | How often to check NVD for new CVEs |
-| `cve_lookback_minutes` | `6` | Look-back window for new CVEs |
+| `cve_lookback_minutes` | `6` | Look-back window on the very first poll (afterwards the watermark takes over) |
+| `max_catchup_hours` | `24` | Ceiling on a single catch-up poll after downtime; a longer gap is reported to Telegram |
 | `commit_poll_interval_minutes` | `15` | How often to check tracked repos for new commits |
+| `per_cve_alerts` | `false` | Post a Telegram message for every matching CVE. Off by default — see Alerting below |
+| `immediate_severity` | `CRITICAL` | Severity that bypasses the digest and alerts immediately (empty string disables) |
+| `immediate_on_kev` | `true` | Alert immediately when a CVE is in the CISA KEV catalogue, whatever its severity |
 | `severity_threshold` | `MEDIUM` | Minimum CVE severity to open a GitHub issue (`LOW` / `MEDIUM` / `HIGH` / `CRITICAL`) |
+| `enrichment_enabled` | `true` | Look up CISA KEV and FIRST EPSS signals |
+| `kev_refresh_hours` | `24` | How often to re-download the KEV catalogue |
+| `epss_cache_hours` | `24` | How long an EPSS score stays cached |
+| `min_epss_for_issue` | `0.0` | Minimum EPSS score to open an issue. `0` disables the filter — see the warning below |
+| `pending_recheck_time` | `04:00` | Daily re-check of CVEs published without a CVSS score (HH:MM) |
+| `pending_retention_days` | `14` | How long to keep re-checking an unscored CVE before giving up |
 | `seen_cve_limit` | `1000` | Max CVE IDs to remember (deduplication) |
 | `watchlist` | `[python, node, linux, ...]` | Keywords matched against CVE descriptions |
 | `daily_summary_time` | `23:55` | Time for daily summary message (HH:MM) |
@@ -181,13 +193,45 @@ Settings are stored in `data/config.json` (git-ignored — it's per-deployment r
 | `llm_max_tokens` | `2000` | Max tokens per LLM response |
 | `allowed_user_ids` | `[]` | Telegram user IDs with bot access |
 
-CVEs below `severity_threshold` are never filtered out of Telegram alerts or the daily digest — the threshold only gates whether a GitHub issue gets opened, so you're not woken up for a `LOW` severity bug in a dev dependency while still seeing it in the feed.
+CVEs below `severity_threshold` are never filtered out of the daily digest — the threshold only gates whether a GitHub issue gets opened, so you're not woken up for a `LOW` severity bug in a dev dependency while still seeing it in the feed.
 
 Example: raise the severity threshold so only high-severity CVEs create issues:
 
 ```
 /setconfig severity_threshold HIGH
 ```
+
+### Alerting
+
+By default the bot is quiet. You hear from it in exactly three situations:
+
+1. **The daily digest** at `daily_summary_time`, grouped into CVEs that affect your tracked repos and watchlist-only matches, sorted by exploitation signal then severity.
+2. **A security issue opened** on one of your repos, reported the moment it happens.
+3. **An urgent CVE** — `CRITICAL`, or anything listed in CISA KEV — which bypasses the digest entirely.
+
+To go back to a message per matching CVE:
+
+```
+/setconfig per_cve_alerts true
+```
+
+### Exploitation signals
+
+CVSS describes how bad a vulnerability would be if exploited; it says nothing about whether anyone is exploiting it. Two feeds fill that in:
+
+- **CISA KEV** — confirmed exploited in the wild. Shown as ⚡KEV and, by default, alerted immediately regardless of severity.
+- **FIRST EPSS** — probability of exploitation within 30 days, `0`–`1`.
+
+Both are cached to disk and **fail open**: if a feed is unreachable the bot carries on exactly as it would without it. Enrichment can never suppress an alert.
+
+> `min_epss_for_issue` is a filter, and it ships disabled. Raising it stops issues being opened for CVEs below that probability — silently, with no record. Watch real scores in your digest for a while before turning it on. KEV-listed CVEs bypass it regardless.
+
+### Coverage
+
+Two gaps that could otherwise lose CVEs without any visible sign:
+
+- **Downtime.** Polling resumes from the last *successful* poll, not a fixed window, so a failed fetch or a restart re-covers its window instead of skipping it. A gap longer than `max_catchup_hours` is reported to Telegram rather than passed over.
+- **Unscored CVEs.** NVD often publishes before assigning a CVSS score, and the feed is queried by publication date — so a CVE arriving as `PENDING` would never be looked at again. Matching unscored CVEs are re-checked daily until they're scored or age out after `pending_retention_days`.
 
 ## LLM Provider Notes
 
@@ -226,6 +270,8 @@ nvd_bot/
 │   │   │                     #   git_connect, git_browser)
 │   │   └── callbacks/        # Inline-keyboard callback handlers
 │   ├── nvd/                  # NVD API client, CVE filter, formatter
+│   │   ├── poll_state.py     # Poll watermark + unscored-CVE re-check queue
+│   │   └── enrichment.py     # CISA KEV + FIRST EPSS lookups (cached, fail-open)
 │   ├── repos/                # Repo registry, profile model, GitHub/GitLab clients
 │   │   ├── scanner.py        # Orchestrator: manifest → import scan → LLM agent
 │   │   ├── dep_parser.py     # Manifest file parsers (Layer 1)
@@ -239,6 +285,10 @@ nvd_bot/
 ├── data/                      # Runtime data (volume-mounted, git-ignored)
 │   ├── config.json            # Live settings
 │   ├── seen_cves.csv          # Deduplication store
+│   ├── daily_alerts.json      # Digest queue (survives restarts)
+│   ├── poll_state.json        # Poll watermark + unscored CVEs
+│   ├── issue_ledger.json      # (repo, CVE) → issue URL, prevents duplicates
+│   ├── kev.json / epss.json   # Cached exploitation signals
 │   ├── user_git_accounts.json # Per-user OAuth tokens/PATs
 │   └── repos/                 # Repo registry and cached profiles
 ├── docker-compose.yml

@@ -14,15 +14,52 @@ def register():
     @state.bot.message_handler(commands=['status'])
     def cmd_status(msg: Message):
         if not _authorized(msg): return
+        from nvd_bot.nvd import poll_state, enrichment
+        from nvd_bot.repos.issue_ledger import IssueLedger
+
         repos = state._registry.list_repos()
+        last_poll = poll_state.get_last_poll()
+        last_str = last_poll.strftime('%Y-%m-%d %H:%M UTC') if last_poll else 'never'
+        kev_age = enrichment.kev_cache_age_hours()
+        kev_str = 'never fetched' if kev_age == float('inf') else f'{kev_age:.1f}h ago'
+
+        quiet = not config.get('per_cve_alerts', False)
+        mode = ('digest only' if quiet else 'every CVE')
+        immediate = config.get('immediate_severity') or 'none'
+
+        # With per-CVE alerts off, silence is the normal state — these numbers
+        # are the only way to tell a quiet day from a broken bot.
         send(
             f'🤖 <b>NVD Bot Status</b>\n\n'
             f'📦 Tracked repos: {len(repos)}\n'
+            f'🔔 Alert mode: <b>{mode}</b> (immediate at {html.escape(str(immediate))}'
+            f'{", KEV" if config.get("immediate_on_kev", True) else ""})\n'
+            f'📊 Queued for next summary: {len(_pending_summary())}\n'
+            f'⏳ Awaiting CVSS score: {poll_state.pending_count()}\n'
+            f'🔒 Issues on record: {IssueLedger().count()}\n\n'
+            f'🕐 Last successful CVE poll: {last_str}\n'
+            f'⚡ KEV cache: {kev_str}\n'
             f'🔍 Watchlist: {", ".join(config.get("watchlist", []))}\n'
             f'🤖 LLM: {config.get("llm_provider")} / {config.get("llm_model")}\n'
             f'⏱ CVE poll: every {config.get("nvd_poll_interval_minutes")} min\n'
-            f'⏱ Commit poll: every {config.get("commit_poll_interval_minutes")} min'
+            f'⏱ Commit poll: every {config.get("commit_poll_interval_minutes")} min\n'
+            f'📅 Summary at {config.get("daily_summary_time")}'
         )
+
+    @state.bot.message_handler(commands=['summary'])
+    def cmd_summary(msg: Message):
+        if not _authorized(msg): return
+        parts = msg.text.split(maxsplit=1)
+        peek = len(parts) > 1 and parts[1].strip().lower() == 'peek'
+
+        job = state._summary_job
+        if job is None:
+            send('⏳ Still starting up — try again in a moment.')
+            return
+        if not job(drain=not peek):
+            send('📭 Nothing recorded since the last summary.')
+        elif peek:
+            send('👆 Preview only — these stay queued for the scheduled summary.')
 
     @state.bot.message_handler(commands=['llmcheck'])
     def cmd_llmcheck(msg: Message):
@@ -87,6 +124,8 @@ def register():
             '/removekeyword &lt;word&gt; — Remove watchlist keyword\n\n'
             '<b>Info</b>\n'
             '/status — System status overview\n'
+            '/summary — Send the CVE digest now (clears the queue)\n'
+            '/summary peek — Preview it without clearing\n'
             '/llmcheck [model] — Test LLM connection\n\n'
             '<b>User Management (owner only)</b>\n'
             '/adduser &lt;id&gt; — Allow a Telegram user to use this bot\n'
@@ -98,6 +137,13 @@ def register():
             '/myrepos — Browse and track repos from your accounts\n'
             '/issues &lt;repo-id&gt; — View issues for a tracked repo'
         )
+
+
+def _pending_summary() -> list:
+    """Alerts waiting for the next digest. Read from disk so /status works
+    even before anything has been recorded this process."""
+    from nvd_bot import main
+    return main._load_daily_alerts()
 
 
 def _llmcheck_task(model: str, is_override: bool):

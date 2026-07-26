@@ -19,6 +19,10 @@ _git_store: GitAccountStore = None
 
 _executor = ThreadPoolExecutor(max_workers=4)
 
+# Set by main after init. Slot rather than import because main imports bot,
+# so bot importing main would be circular.
+_summary_job = None  # callable(drain: bool) -> bool
+
 # Per-user interaction state (in-memory, non-persistent)
 _awaiting_token: dict[int, dict] = {}   # uid → {provider_type, base_url}
 _awaiting_url: dict[int, dict] = {}     # uid → {provider_type}
