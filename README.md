@@ -131,7 +131,8 @@ GITHUB_OAUTH_CLIENT_SECRET=
 | `/llmcheck [model]` | Test the LLM connection and measure latency |
 | `/status` | System status overview |
 | `/version` | Show the running version, commit, and build date |
-| `/mutes` | List muted products and dismissed CVEs |
+| `/mutes` | List muted products |
+| `/dismissed` | Review set-aside CVEs and restore them |
 | `/unmute <product>` | Un-mute a product |
 | `/summary` | Send the CVE digest now and clear the queue |
 | `/summary peek` | Preview the digest without clearing it |
@@ -251,7 +252,7 @@ regularly matches because its write-up mentions your stack — an Electron deskt
 app "with full Node.js access" matches `node`. Rather than making the keyword
 rules cleverer, every immediate alert carries buttons:
 
-- **🙈 Not relevant** — drops that CVE from today's digest and never raises it again
+- **🙈 Not relevant** — sets that CVE aside: out of today's digest, not raised again
 - **🔇 Mute "product"** — no further watchlist alerts for that product
 
 Both act on the *product* rather than the keyword that matched. Muting `node`
@@ -261,7 +262,14 @@ because of one Electron app would silence every genuine Node.js CVE.
 > the signal this bot exists to deliver, and it must not be silenceable by a
 > mis-tap on an unrelated alert. Mutes apply to watchlist noise only.
 
-Review with `/mutes`, undo with `/unmute <product>` or the buttons there.
+Setting a CVE aside is **reversible**. "I've dealt with this for now" and "I never
+want to see this again" are the same gesture, so neither is treated as permanent:
+the digest entry is stored alongside the dismissal, an **↩️ Undo** button appears
+straight after, and `/dismissed` lists everything you've parked with a Restore
+button for each. Restoring puts the CVE back in the pending digest with its detail
+intact.
+
+Review mutes with `/mutes`, undo with `/unmute <product>` or the buttons there.
 
 ### Coverage
 

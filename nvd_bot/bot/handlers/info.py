@@ -72,6 +72,40 @@ def register():
               'repo always come through.</i>',
             reply_markup=kb)
 
+    @state.bot.message_handler(commands=['dismissed'])
+    def cmd_dismissed(msg: Message):
+        if not _authorized(msg): return
+        from nvd_bot.nvd import mutes
+        records = mutes.list_dismissed(limit=15)
+        if not records:
+            send('🙈 <b>Nothing set aside.</b>\n\n'
+                 '<i>Use “Not relevant” on an alert to park a CVE here.</i>')
+            return
+
+        lines, kb = [], InlineKeyboardMarkup()
+        for rec in records:
+            cve_id = rec.get('cve_id', '?')
+            alert = rec.get('alert') or {}
+            sev = alert.get('severity', '')
+            when = (rec.get('dismissed_at') or '')[:10]
+            title = alert.get('title', '')
+            if len(title) > 70:
+                title = title[:69] + '…'
+            bits = ' · '.join(b for b in (sev, when) if b)
+            lines.append(f'• <code>{html.escape(cve_id)}</code>'
+                         + (f'  <i>{html.escape(bits)}</i>' if bits else '')
+                         + (f'\n  {html.escape(title)}' if title else ''))
+            kb.add(InlineKeyboardButton(f'↩️ Restore {cve_id}',
+                                        callback_data=f'cve:r:{cve_id}'))
+
+        total = mutes.dismissed_count()
+        header = f'🙈 <b>Set aside</b> ({total})'
+        if total > len(records):
+            header += f' — showing the {len(records)} most recent'
+        send(header + '\n\n' + '\n'.join(lines)
+             + '\n\n<i>Restoring puts a CVE back in the pending digest.</i>',
+             reply_markup=kb)
+
     @state.bot.message_handler(commands=['unmute'])
     def cmd_unmute(msg: Message):
         if not _authorized(msg): return
@@ -174,7 +208,8 @@ def register():
             '<b>Info</b>\n'
             '/status — System status overview\n'
             '/version — Show the running version and commit\n'
-            '/mutes — List muted products and dismissed CVEs\n'
+            '/mutes — List muted products\n'
+            '/dismissed — Review and restore set-aside CVEs\n'
             '/unmute &lt;product&gt; — Un-mute a product\n'
             '/summary — Send the CVE digest now (clears the queue)\n'
             '/summary peek — Preview it without clearing\n'

@@ -199,9 +199,9 @@ def test_remove_daily_alert_drops_only_that_cve():
     _fresh()
     main.process_cve(_cve('CVE-2026-7'), _Reg(), None, None)
     main.process_cve(_cve('CVE-2026-8'), _Reg(), None, None)
-    assert main.remove_daily_alert('CVE-2026-7') is True
+    assert main.remove_daily_alert('CVE-2026-7')['cve_id'] == 'CVE-2026-7'
     assert [a['cve_id'] for a in main._daily_alerts] == ['CVE-2026-8']
-    assert main.remove_daily_alert('CVE-2026-7') is False
+    assert main.remove_daily_alert('CVE-2026-7') is None
 
 
 # ── keyboard ──────────────────────────────────────────────────────────────────
@@ -230,3 +230,95 @@ def test_alerts_carry_a_keyboard_when_there_is_no_repo_match():
     main.process_cve(_cve('CVE-2026-10'), _Reg(), None, None)
     _, markup = _sent[0]
     assert markup is not None, 'watchlist noise should be dismissible'
+
+
+# ── set aside / restore ───────────────────────────────────────────────────────
+
+def test_dismissal_stores_the_digest_entry():
+    from nvd_bot import main
+    from nvd_bot.nvd import mutes
+    _fresh()
+    main.process_cve(_cve('CVE-2026-20'), _Reg(), None, None)
+    entry = main.remove_daily_alert('CVE-2026-20')
+    mutes.dismiss_cve('CVE-2026-20', entry)
+
+    rec = mutes.list_dismissed()[0]
+    assert rec['cve_id'] == 'CVE-2026-20'
+    assert rec['alert']['severity'] == 'HIGH', 'detail must survive for the undo'
+    assert rec['dismissed_at']
+
+
+def test_restore_returns_the_entry_and_unblocks_the_cve():
+    from nvd_bot import main
+    from nvd_bot.nvd import mutes
+    _fresh()
+    main.process_cve(_cve('CVE-2026-21'), _Reg(), None, None)
+    entry = main.remove_daily_alert('CVE-2026-21')
+    mutes.dismiss_cve('CVE-2026-21', entry)
+    assert mutes.is_dismissed('CVE-2026-21') is True
+
+    restored = mutes.restore_cve('CVE-2026-21')
+    assert restored['cve_id'] == 'CVE-2026-21'
+    assert mutes.is_dismissed('CVE-2026-21') is False
+
+
+def test_restored_cve_goes_back_into_the_digest():
+    from nvd_bot import main
+    from nvd_bot.nvd import mutes
+    _fresh()
+    main.process_cve(_cve('CVE-2026-22'), _Reg(), None, None)
+    entry = main.remove_daily_alert('CVE-2026-22')
+    mutes.dismiss_cve('CVE-2026-22', entry)
+    assert main._daily_alerts == []
+
+    main.restore_daily_alert(mutes.restore_cve('CVE-2026-22'))
+    assert [a['cve_id'] for a in main._daily_alerts] == ['CVE-2026-22']
+
+
+def test_restored_cve_is_alerted_again():
+    from nvd_bot import main
+    from nvd_bot.nvd import mutes
+    _fresh()
+    mutes.dismiss_cve('CVE-2026-23', {})
+    main.process_cve(_cve('CVE-2026-23'), _Reg(), None, None)
+    assert _sent == [], 'still suppressed while set aside'
+
+    mutes.restore_cve('CVE-2026-23')
+    _fresh_seen()
+    main.process_cve(_cve('CVE-2026-23'), _Reg(), None, None)
+    assert len(_sent) == 1, 'restoring must actually bring it back'
+
+
+def _fresh_seen():
+    from nvd_bot import config
+    if os.path.exists(config.SEEN_CVES_FILE):
+        os.remove(config.SEEN_CVES_FILE)
+
+
+def test_restore_of_unknown_cve_returns_none():
+    from nvd_bot.nvd import mutes
+    _fresh()
+    assert mutes.restore_cve('CVE-does-not-exist') is None
+
+
+def test_legacy_plain_id_format_is_still_readable():
+    """An existing deployment's dismissed_cves.json is a list of bare ids."""
+    import json
+    from nvd_bot import config
+    from nvd_bot.nvd import mutes
+    _fresh()
+    with open(config.DISMISSED_CVES_FILE, 'w') as f:
+        json.dump(['CVE-2026-30', 'CVE-2026-31'], f)
+
+    assert mutes.is_dismissed('CVE-2026-30') is True
+    assert mutes.dismissed_count() == 2
+    assert mutes.restore_cve('CVE-2026-30') == {}, 'no stored detail, but restorable'
+    assert mutes.is_dismissed('CVE-2026-30') is False
+
+
+def test_list_dismissed_is_newest_first():
+    from nvd_bot.nvd import mutes
+    _fresh()
+    mutes.dismiss_cve('CVE-a', {})
+    mutes.dismiss_cve('CVE-b', {})
+    assert [r['cve_id'] for r in mutes.list_dismissed()] == ['CVE-b', 'CVE-a']

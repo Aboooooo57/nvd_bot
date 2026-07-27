@@ -114,17 +114,23 @@ def _record_daily_alert(alert: dict):
         _write_daily_alerts_unlocked(_daily_alerts)
 
 
-def remove_daily_alert(cve_id: str) -> bool:
-    """Drop a CVE from the pending digest — used when the reader dismisses or
-    mutes it from an alert's buttons."""
+def remove_daily_alert(cve_id: str) -> dict | None:
+    """Take a CVE out of the pending digest and return its entry, so a
+    dismissal can store it and put it back later."""
     global _daily_alerts
     with _daily_lock:
-        remaining = [a for a in _daily_alerts if a.get('cve_id') != cve_id]
-        if len(remaining) == len(_daily_alerts):
-            return False
-        _daily_alerts = remaining
+        removed = next((a for a in _daily_alerts if a.get('cve_id') == cve_id), None)
+        if removed is None:
+            return None
+        _daily_alerts = [a for a in _daily_alerts if a.get('cve_id') != cve_id]
         _write_daily_alerts_unlocked(_daily_alerts)
-        return True
+        return removed
+
+
+def restore_daily_alert(alert: dict):
+    """Put a previously dismissed entry back into the pending digest."""
+    if alert and alert.get('cve_id'):
+        _record_daily_alert(alert)
 
 
 def _drain_daily_alerts() -> list[dict]:

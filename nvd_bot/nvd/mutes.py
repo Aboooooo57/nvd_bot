@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+from datetime import datetime, timezone
 
 from nvd_bot import config
 
@@ -27,24 +28,29 @@ _lock = threading.Lock()
 _MAX_DISMISSED = 500
 
 
-def _read() -> list[str]:
+def _read() -> list[dict]:
+    """Dismissals as records. Tolerates the original format, which was a
+    plain list of ids, so an existing deployment keeps its dismissals."""
     if not os.path.exists(config.DISMISSED_CVES_FILE):
         return []
     try:
         with open(config.DISMISSED_CVES_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
-        return data if isinstance(data, list) else []
+        if not isinstance(data, list):
+            return []
+        return [{'cve_id': e} if isinstance(e, str) else e
+                for e in data if isinstance(e, (str, dict))]
     except Exception as e:
         print(f'[mutes] read error: {e}')
         return []
 
 
-def _write(ids: list[str]):
+def _write(records: list[dict]):
     try:
         os.makedirs(config.DATA_DIR, exist_ok=True)
         tmp = config.DISMISSED_CVES_FILE + '.tmp'
         with open(tmp, 'w', encoding='utf-8') as f:
-            json.dump(ids[-_MAX_DISMISSED:], f)
+            json.dump(records[-_MAX_DISMISSED:], f, indent=2)
         os.replace(tmp, config.DISMISSED_CVES_FILE)
     except Exception as e:
         print(f'[mutes] write error: {e}')
@@ -52,19 +58,46 @@ def _write(ids: list[str]):
 
 # ── per-CVE dismissal ─────────────────────────────────────────────────────────
 
-def dismiss_cve(cve_id: str) -> bool:
+def dismiss_cve(cve_id: str, alert: dict | None = None) -> bool:
+    """Set a CVE aside. The digest entry is stored alongside it so the
+    dismissal can be undone later with the detail intact — "I've dealt with
+    this for now" and "I never want to see this again" are the same gesture,
+    and only one of them should be irreversible."""
     with _lock:
-        ids = _read()
-        if cve_id in ids:
+        records = _read()
+        if any(r.get('cve_id') == cve_id for r in records):
             return False
-        ids.append(cve_id)
-        _write(ids)
+        records.append({
+            'cve_id': cve_id,
+            'dismissed_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S'),
+            'alert': alert or {},
+        })
+        _write(records)
         return True
+
+
+def restore_cve(cve_id: str) -> dict | None:
+    """Un-dismiss. Returns the stored digest entry so the caller can put it
+    back in the queue, or {} if nothing was captured."""
+    with _lock:
+        records = _read()
+        for i, rec in enumerate(records):
+            if rec.get('cve_id') == cve_id:
+                records.pop(i)
+                _write(records)
+                return rec.get('alert') or {}
+        return None
 
 
 def is_dismissed(cve_id: str) -> bool:
     with _lock:
-        return cve_id in _read()
+        return any(r.get('cve_id') == cve_id for r in _read())
+
+
+def list_dismissed(limit: int = 20) -> list[dict]:
+    """Most recently dismissed first."""
+    with _lock:
+        return list(reversed(_read()))[:limit]
 
 
 def dismissed_count() -> int:

@@ -56,6 +56,7 @@ def init(registry, gh, llm, git_store=None) -> telebot.TeleBot:
             BotCommand('version',       'Show running version'),
             BotCommand('summary',       'Send the CVE digest now'),
             BotCommand('mutes',         'List muted products'),
+            BotCommand('dismissed',     'Review set-aside CVEs'),
             BotCommand('unmute',        'Un-mute a product'),
             BotCommand('help',          'Show all commands'),
             BotCommand('adduser',       'Allow a user (owner only)'),

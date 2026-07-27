@@ -41,11 +41,28 @@ def register():
         mid = call.message.message_id
 
         if action == 'd' and target:
-            _drop_from_digest(target)
-            mutes.dismiss_cve(target)
-            state.bot.answer_callback_query(call.id, 'Dismissed.')
-            _replace(mid, f'🙈 <b>Dismissed</b> — <code>{html.escape(target)}</code>\n'
-                          f'<i>Removed from today\'s digest. It won\'t be raised again.</i>')
+            # Capture the digest entry before dropping it, so undo can put
+            # the whole thing back rather than just un-blocking the id.
+            entry = _drop_from_digest(target)
+            mutes.dismiss_cve(target, entry)
+            state.bot.answer_callback_query(call.id, 'Set aside.')
+            _replace(mid,
+                     f'🙈 <b>Set aside</b> — <code>{html.escape(target)}</code>\n'
+                     f'<i>Out of the digest and won\'t be raised again. Reversible '
+                     f'any time from /dismissed.</i>',
+                     keyboard=_undo_keyboard(target))
+
+        elif action == 'r' and target:
+            entry = mutes.restore_cve(target)
+            if entry is None:
+                state.bot.answer_callback_query(call.id, 'Not on the list.')
+                return
+            from nvd_bot import main
+            main.restore_daily_alert(entry)
+            state.bot.answer_callback_query(call.id, 'Restored.')
+            back = ' It is back in the pending digest.' if entry else ''
+            _replace(mid, f'↩️ <b>Restored</b> — <code>{html.escape(target)}</code>\n'
+                          f'<i>It will be reported again.{back}</i>')
 
         elif action == 'm' and target:
             added = mutes.ignore_product(target)
@@ -81,19 +98,26 @@ def _cve_from_message(call) -> str:
     return m.group(0) if m else ''
 
 
-def _drop_from_digest(cve_id: str):
+def _undo_keyboard(cve_id: str):
+    from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton('↩️ Undo', callback_data=f'cve:r:{cve_id}'))
+    return kb
+
+
+def _drop_from_digest(cve_id: str) -> dict:
     if not cve_id:
-        return
+        return {}
     from nvd_bot import main
-    main.remove_daily_alert(cve_id)
+    return main.remove_daily_alert(cve_id) or {}
 
 
-def _replace(message_id: int, text: str):
-    """Rewrite the alert in place and drop the keyboard, so the action is
-    visibly recorded rather than the message just losing its buttons."""
+def _replace(message_id: int, text: str, keyboard=None):
+    """Rewrite the alert in place, so the action is visibly recorded rather
+    than the message just losing its buttons."""
     try:
         state.bot.edit_message_text(text, config.CHAT_ID, message_id,
-                                    parse_mode='HTML', reply_markup=None)
+                                    parse_mode='HTML', reply_markup=keyboard)
     except Exception as e:
         print(f'[cve-cb] edit failed: {e}')
 
