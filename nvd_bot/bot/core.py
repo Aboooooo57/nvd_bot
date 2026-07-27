@@ -23,6 +23,7 @@ def init(registry, gh, llm, git_store=None) -> telebot.TeleBot:
     from nvd_bot.bot.handlers import git_browser
     from nvd_bot.bot.callbacks import adm
     from nvd_bot.bot.callbacks import gh as gh_cb
+    from nvd_bot.bot.callbacks import cve as cve_cb
 
     repos.register()
     cfg_handlers.register()
@@ -31,6 +32,7 @@ def init(registry, gh, llm, git_store=None) -> telebot.TeleBot:
     git_browser.register()
     adm.register()
     gh_cb.register()
+    cve_cb.register()
 
     try:
         state.bot.set_my_commands([
@@ -51,6 +53,10 @@ def init(registry, gh, llm, git_store=None) -> telebot.TeleBot:
             BotCommand('removekeyword', 'Remove a watchlist keyword'),
             BotCommand('llmcheck',      'Test LLM connection'),
             BotCommand('status',        'System status overview'),
+            BotCommand('version',       'Show running version'),
+            BotCommand('summary',       'Send the CVE digest now'),
+            BotCommand('mutes',         'List muted products'),
+            BotCommand('unmute',        'Un-mute a product'),
             BotCommand('help',          'Show all commands'),
             BotCommand('adduser',       'Allow a user (owner only)'),
             BotCommand('removeuser',    'Remove a user (owner only)'),

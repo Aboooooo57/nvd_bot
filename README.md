@@ -131,6 +131,8 @@ GITHUB_OAUTH_CLIENT_SECRET=
 | `/llmcheck [model]` | Test the LLM connection and measure latency |
 | `/status` | System status overview |
 | `/version` | Show the running version, commit, and build date |
+| `/mutes` | List muted products and dismissed CVEs |
+| `/unmute <product>` | Un-mute a product |
 | `/summary` | Send the CVE digest now and clear the queue |
 | `/summary peek` | Preview the digest without clearing it |
 | `/adduser <telegram-id>` | Grant bot access to a user (owner only) |
@@ -195,6 +197,7 @@ Settings are stored in `data/config.json` (git-ignored — it's per-deployment r
 | `watchlist` | `[python, node, linux, ...]` | Keywords matched against CVE descriptions |
 | `daily_summary_time` | `23:55` | Time for daily summary message (HH:MM) |
 | `summary_description_chars` | `170` | How much CVE description each digest entry shows |
+| `ignored_products` | `[]` | Products muted from the feed. Only suppresses watchlist noise — see below |
 | `llm_provider` | `openrouter` | `openrouter`, `litellm_proxy`, or `gemini` (usually auto-detected — see above) |
 | `llm_model` | `gemini-3.5-flash` | Model identifier — must match a model your active provider actually serves |
 | `llm_max_tokens` | `2000` | Max tokens per LLM response |
@@ -240,6 +243,25 @@ CVSS describes how bad a vulnerability would be if exploited; it says nothing ab
 Both are cached to disk and **fail open**: if a feed is unreachable the bot carries on exactly as it would without it. Enrichment can never suppress an alert.
 
 > `min_epss_for_issue` is a filter, and it ships disabled. Raising it stops issues being opened for CVEs below that probability — silently, with no record. Watch real scores in your digest for a while before turning it on. KEV-listed CVEs bypass it regardless.
+
+### Muting noise
+
+Watchlist keywords match on description text, so a CVE in an unrelated product
+regularly matches because its write-up mentions your stack — an Electron desktop
+app "with full Node.js access" matches `node`. Rather than making the keyword
+rules cleverer, every immediate alert carries buttons:
+
+- **🙈 Not relevant** — drops that CVE from today's digest and never raises it again
+- **🔇 Mute "product"** — no further watchlist alerts for that product
+
+Both act on the *product* rather than the keyword that matched. Muting `node`
+because of one Electron app would silence every genuine Node.js CVE.
+
+> Neither can suppress a CVE that matches a tracked repo's dependencies. That is
+> the signal this bot exists to deliver, and it must not be silenceable by a
+> mis-tap on an unrelated alert. Mutes apply to watchlist noise only.
+
+Review with `/mutes`, undo with `/unmute <product>` or the buttons there.
 
 ### Coverage
 

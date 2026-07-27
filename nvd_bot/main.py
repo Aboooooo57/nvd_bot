@@ -14,7 +14,7 @@ from nvd_bot.nvd.client import get_new_cves, get_cve_by_id
 from nvd_bot.nvd import poll_state
 from nvd_bot.nvd.filter import is_relevant_to_watchlist, extract_affected_packages
 from nvd_bot.nvd.formatter import build_alert_message, build_daily_summary_message, extract_meta
-from nvd_bot.nvd import enrichment
+from nvd_bot.nvd import enrichment, mutes
 from nvd_bot.repos.registry import RepoRegistry
 from nvd_bot.repos.github_client import GithubClient
 from nvd_bot.repos.issue_ledger import IssueLedger
@@ -114,6 +114,19 @@ def _record_daily_alert(alert: dict):
         _write_daily_alerts_unlocked(_daily_alerts)
 
 
+def remove_daily_alert(cve_id: str) -> bool:
+    """Drop a CVE from the pending digest — used when the reader dismisses or
+    mutes it from an alert's buttons."""
+    global _daily_alerts
+    with _daily_lock:
+        remaining = [a for a in _daily_alerts if a.get('cve_id') != cve_id]
+        if len(remaining) == len(_daily_alerts):
+            return False
+        _daily_alerts = remaining
+        _write_daily_alerts_unlocked(_daily_alerts)
+        return True
+
+
 def _drain_daily_alerts() -> list[dict]:
     global _daily_alerts
     with _daily_lock:
@@ -181,6 +194,24 @@ def _evaluate_cve(cve_item: dict, registry: RepoRegistry, gh: GithubClient,
         poll_state.drop_pending(cve_id)
         return
 
+    # Reader-driven suppression. Both only ever apply to watchlist noise —
+    # once a CVE matches a tracked repo's dependencies it is reported
+    # regardless, since that is the signal this bot exists to deliver.
+    if not matches:
+        if mutes.is_dismissed(cve_id):
+            print(f'[main] {cve_id}: dismissed by user — skipping')
+            if not force:
+                _save_seen(cve_id)
+            poll_state.drop_pending(cve_id)
+            return
+        muted = mutes.matched_ignored(list(affected or []))
+        if muted:
+            print(f'[main] {cve_id}: product "{muted}" is muted — skipping')
+            if not force:
+                _save_seen(cve_id)
+            poll_state.drop_pending(cve_id)
+            return
+
     signals = enrichment.enrich(cve_id)
 
     # Per-CVE alerts are opt-in, but confirmed-exploited or top-severity CVEs
@@ -189,7 +220,14 @@ def _evaluate_cve(cve_item: dict, registry: RepoRegistry, gh: GithubClient,
     urgent = _is_immediate(severity, signals)
     message_id = None
     if config.get('per_cve_alerts', False) or urgent:
-        sent = tgbot.send(build_alert_message(cve_item, signals, urgent=urgent))
+        # Only offer mute/dismiss on watchlist noise — a repo match shouldn't
+        # be silenceable with one tap.
+        keyboard = None
+        if not matches:
+            from nvd_bot.bot.callbacks.cve import build_keyboard
+            keyboard = build_keyboard(cve_id, sorted(affected or []))
+        sent = tgbot.send(build_alert_message(cve_item, signals, urgent=urgent),
+                          reply_markup=keyboard)
         message_id = sent.message_id if sent else None
     if not force:
         _save_seen(cve_id)

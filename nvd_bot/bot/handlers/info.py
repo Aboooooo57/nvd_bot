@@ -14,7 +14,7 @@ def register():
     @state.bot.message_handler(commands=['status'])
     def cmd_status(msg: Message):
         if not _authorized(msg): return
-        from nvd_bot.nvd import poll_state, enrichment
+        from nvd_bot.nvd import poll_state, enrichment, mutes
         from nvd_bot.repos.issue_ledger import IssueLedger
 
         repos = state._registry.list_repos()
@@ -37,7 +37,8 @@ def register():
             f'{", KEV" if config.get("immediate_on_kev", True) else ""})\n'
             f'📊 Queued for next summary: {len(_pending_summary())}\n'
             f'⏳ Awaiting CVSS score: {poll_state.pending_count()}\n'
-            f'🔒 Issues on record: {IssueLedger().count()}\n\n'
+            f'🔒 Issues on record: {IssueLedger().count()}\n'
+            f'🔇 Muted products: {len(mutes.ignored_products())}\n\n'
             f'🕐 Last successful CVE poll: {last_str}\n'
             f'⚡ KEV cache: {kev_str}\n'
             f'🔍 Watchlist: {", ".join(config.get("watchlist", []))}\n'
@@ -46,6 +47,44 @@ def register():
             f'⏱ Commit poll: every {config.get("commit_poll_interval_minutes")} min\n'
             f'📅 Summary at {config.get("daily_summary_time")}'
         )
+
+    @state.bot.message_handler(commands=['mutes'])
+    def cmd_mutes(msg: Message):
+        if not _authorized(msg): return
+        from nvd_bot.nvd import mutes
+        products = mutes.ignored_products()
+        dismissed = mutes.dismissed_count()
+
+        if not products:
+            send(f'🔇 <b>No muted products.</b>\n\n'
+                 f'Dismissed CVEs: {dismissed}\n\n'
+                 f'<i>Use the buttons on an alert to mute a product you don\'t care about.</i>')
+            return
+
+        kb = InlineKeyboardMarkup()
+        for i, p in enumerate(products):
+            kb.add(InlineKeyboardButton(f'🔊 Un-mute {p}', callback_data=f'cve:u:{i}'))
+        send(
+            f'🔇 <b>Muted products</b> ({len(products)})\n\n'
+            + '\n'.join(f'• <code>{html.escape(p)}</code>' for p in products)
+            + f'\n\nDismissed CVEs: {dismissed}\n'
+            + '<i>Muting only suppresses watchlist noise — CVEs affecting a tracked '
+              'repo always come through.</i>',
+            reply_markup=kb)
+
+    @state.bot.message_handler(commands=['unmute'])
+    def cmd_unmute(msg: Message):
+        if not _authorized(msg): return
+        from nvd_bot.nvd import mutes
+        parts = msg.text.split(maxsplit=1)
+        if len(parts) < 2:
+            send('Usage: /unmute &lt;product&gt;\nOr use the buttons in /mutes')
+            return
+        product = parts[1].strip().lower()
+        if mutes.unignore_product(product):
+            send(f'🔊 Un-muted: <code>{html.escape(product)}</code>')
+        else:
+            send(f'❌ Not muted: <code>{html.escape(product)}</code>')
 
     @state.bot.message_handler(commands=['version'])
     def cmd_version(msg: Message):
@@ -135,6 +174,8 @@ def register():
             '<b>Info</b>\n'
             '/status — System status overview\n'
             '/version — Show the running version and commit\n'
+            '/mutes — List muted products and dismissed CVEs\n'
+            '/unmute &lt;product&gt; — Un-mute a product\n'
             '/summary — Send the CVE digest now (clears the queue)\n'
             '/summary peek — Preview it without clearing\n'
             '/llmcheck [model] — Test LLM connection\n\n'

@@ -24,6 +24,7 @@ POLL_STATE_FILE = 'data/poll_state.json'
 ISSUE_LEDGER_FILE = 'data/issue_ledger.json'
 KEV_CACHE_FILE = 'data/kev.json'
 EPSS_CACHE_FILE = 'data/epss.json'
+DISMISSED_CVES_FILE = 'data/dismissed_cves.json'
 REPOS_DIR = 'data/repos'
 REPO_REGISTRY_FILE = 'data/repos/registry.json'
 CONFIG_FILE = 'data/config.json'
@@ -71,6 +72,10 @@ _DEFAULTS: dict = {
     'llm_max_tokens': 2000,
     'profile_file_path': '.nvd_bot/profile.json',
     'watchlist': ['python', 'node', 'linux', 'ubuntu', 'debian', 'fastapi', 'django', 'flask', 'express', 'spring'],
+    # Products muted from the feed via the alert buttons. Only ever
+    # suppresses watchlist noise — a CVE matching a tracked repo's
+    # dependencies is always reported, muted or not.
+    'ignored_products': [],
     'allowed_user_ids': [],
 }
 
