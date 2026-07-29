@@ -42,6 +42,11 @@ def edit_or_send(text: str, reply_markup, edit_msg_id,
 
 def pkg_summary(profile) -> str:
     """Human-readable package count string for scan messages."""
+    skipped = getattr(profile, '_scan_skipped', None)
+    if skipped:
+        count = profile.package_count()
+        return f'⚠️ scan failed ({skipped}) — {count} package(s) unchanged from last good scan'
+
     count = profile.package_count()
     if count == 0:
         err = getattr(profile, '_llm_scan_error', None)

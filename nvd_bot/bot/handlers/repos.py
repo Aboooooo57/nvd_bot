@@ -125,7 +125,8 @@ def _add_repo_task(url: str, token: str | None):
         send(f'✅ Repo added: <b>{html.escape(profile.name)}</b>\nID: <code>{profile.id}</code>\nScanning packages…')
         scan_repo(profile, state._gh, state._llm)
         state._registry.update_profile(profile)
-        send(f'📦 Scan complete for <b>{html.escape(profile.name)}</b>: '
+        icon = '⚠️' if getattr(profile, '_scan_skipped', None) else '📦'
+        send(f'{icon} Scan complete for <b>{html.escape(profile.name)}</b>: '
              f'{pkg_summary(profile)}, language: {profile.language}')
     except Exception as e:
         send(f'❌ Error adding repo: {html.escape(str(e))}')
@@ -136,7 +137,8 @@ def _scan_task(profile):
     try:
         scan_repo(profile, state._gh, state._llm)
         state._registry.update_profile(profile)
-        send(f'✅ Scan done: <b>{html.escape(profile.name)}</b> — '
+        icon = '⚠️' if getattr(profile, '_scan_skipped', None) else '✅'
+        send(f'{icon} Scan done: <b>{html.escape(profile.name)}</b> — '
              f'{pkg_summary(profile)}, language: {profile.language}')
     except Exception as e:
         send(f'❌ Scan failed: {html.escape(str(e))}')

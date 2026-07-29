@@ -27,8 +27,8 @@ def scan_repo(profile: RepoProfile, gh: GithubClient, llm=None) -> dict:
         # specifically when this repo previously had real manifest-parsed
         # packages: a transient GitHub API hiccup must not silently replace
         # a good profile with an empty one and push that over the good copy.
-        print(f'[scanner] {profile.name}: could not list repo files — '
-              f'skipping scan, keeping existing profile')
+        profile._scan_skipped = 'could not list repo files — kept previous data'
+        print(f'[scanner] {profile.name}: {profile._scan_skipped}')
         return profile.packages
 
     packages: dict[str, dict[str, str]] = {}
@@ -62,6 +62,25 @@ def scan_repo(profile: RepoProfile, gh: GithubClient, llm=None) -> dict:
         if not packages and import_pkgs:
             packages = {'import-scan': import_pkgs}
 
+    if not packages and profile.packages:
+        # A rescan that found nothing at all — no manifests, no source
+        # imports, and the LLM fallback found nothing usable either — while
+        # the existing profile already had real data is far more likely a
+        # partial failure (truncated file listing on a large repo tree,
+        # exhausted LLM fallback, an API hiccup between calls) than the repo
+        # having genuinely dropped every dependency. Refuse to overwrite:
+        # leave profile.packages/language/frameworks untouched and don't
+        # push, so the caller's registry update just re-persists the
+        # profile unchanged instead of replacing good data with nothing.
+        had = sum(len(p) for p in profile.packages.values())
+        profile._scan_skipped = (
+            'scan found 0 packages — kept previous data '
+            f'({had} package(s)) instead of overwriting it'
+        )
+        print(f'[scanner] {profile.name}: {profile._scan_skipped}')
+        return profile.packages
+
+    profile._scan_skipped = None
     language, frameworks = detect_language(all_files, packages)
 
     profile.packages = packages
