@@ -198,6 +198,7 @@ def register():
             '/removerepo &lt;id&gt; — Stop tracking a repo\n'
             '/listrepos — List all tracked repos\n'
             '/scanrepo &lt;id&gt; — Force re-scan a repo now\n'
+            '/restorerepo &lt;id&gt; — Recover packages from the repo\'s committed profile.json, no re-scan\n'
             '/repoprofile &lt;id&gt; — Show full repo profile JSON\n'
             '/setrepo &lt;id&gt; &lt;key&gt; &lt;value&gt; — Set per-repo setting\n\n'
             '<b>Configuration</b>\n'

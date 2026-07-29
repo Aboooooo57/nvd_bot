@@ -1,4 +1,4 @@
-"""Handlers for repo management commands: /addrepo, /removerepo, /listrepos, /scanrepo, /repoprofile, /setrepo."""
+"""Handlers for repo management commands: /addrepo, /removerepo, /listrepos, /scanrepo, /restorerepo, /repoprofile, /setrepo."""
 from __future__ import annotations
 import html
 import json
@@ -81,6 +81,24 @@ def register():
         send(f'🔄 Scanning <b>{html.escape(profile.name)}</b>…')
         state._executor.submit(_scan_task, profile)
 
+    @state.bot.message_handler(commands=['restorerepo'])
+    def cmd_restorerepo(msg: Message):
+        if not _authorized(msg): return
+        parts = msg.text.split()
+        if len(parts) < 2:
+            send('Usage: /restorerepo &lt;repo-id&gt;\n\n'
+                 'Recovers packages from the .nvd_bot/profile.json already '
+                 'committed in the repo, without a full re-scan. Use this '
+                 'when local data was mistakenly cleared but the repo\'s '
+                 'own committed copy is still good.')
+            return
+        profile = state._registry.get_repo(parts[1].strip())
+        if not profile:
+            send(f'❌ Repo <code>{html.escape(parts[1].strip())}</code> Not Found.')
+            return
+        send(f'🔄 Restoring <b>{html.escape(profile.name)}</b> from its committed profile…')
+        state._executor.submit(_restore_task, profile)
+
     @state.bot.message_handler(commands=['repoprofile'])
     def cmd_repoprofile(msg: Message):
         if not _authorized(msg): return
@@ -142,6 +160,20 @@ def _scan_task(profile):
              f'{pkg_summary(profile)}, language: {profile.language}')
     except Exception as e:
         send(f'❌ Scan failed: {html.escape(str(e))}')
+
+
+def _restore_task(profile):
+    from nvd_bot.repos.scanner import restore_from_committed_profile
+    try:
+        ok, msg = restore_from_committed_profile(profile, state._gh)
+        if ok:
+            state._registry.update_profile(profile)
+            send(f'✅ <b>{html.escape(profile.name)}</b>: {html.escape(msg)}, '
+                 f'language: {profile.language}')
+        else:
+            send(f'⚠️ <b>{html.escape(profile.name)}</b>: {html.escape(msg)}')
+    except Exception as e:
+        send(f'❌ Restore failed: {html.escape(str(e))}')
 
 
 def _authorized(msg) -> bool:

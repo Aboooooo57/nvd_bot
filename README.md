@@ -117,6 +117,7 @@ GITHUB_OAUTH_CLIENT_SECRET=
 | `/removerepo <id>` | Stop tracking a repo |
 | `/listrepos` | List all tracked repos with status |
 | `/scanrepo <id>` | Force re-scan a repo now |
+| `/restorerepo <id>` | Recover packages from the repo's own committed `.nvd_bot/profile.json`, no re-scan |
 | `/repoprofile <id>` | Show the full repo profile JSON |
 | `/setrepo <id> <key> <value>` | Override a per-repo config setting |
 | `/connectgit [type] [base_url]` | Connect a GitHub or GitLab account (OAuth Device Flow or PAT) |

@@ -92,6 +92,48 @@ def scan_repo(profile: RepoProfile, gh: GithubClient, llm=None) -> dict:
     return packages
 
 
+def restore_from_committed_profile(profile: RepoProfile, gh: GithubClient) -> tuple[bool, str]:
+    """Recover packages/language/frameworks from the .nvd_bot/profile.json
+    already committed in the tracked repo, instead of a full re-scan.
+
+    Every successful scan pushes this file into the target repo, so it
+    doubles as a backup of the last good result — useful when the bot's
+    own local copy gets mistakenly cleared (a failed scan from before the
+    empty-result guards existed, a bad manual edit, registry corruption)
+    but the repo's committed copy is still intact.
+
+    Returns (restored, message). Never touches the profile if there's
+    nothing usable to restore.
+    """
+    import json
+    owner, repo = _split_name(profile.name)
+    if not owner:
+        return False, f'cannot parse repo name: {profile.name}'
+
+    profile_path = config.get('profile_file_path', '.nvd_bot/profile.json')
+    content = gh.get_file_content(owner, repo, profile_path, token=profile.github_token)
+    if not content:
+        return False, f'no {profile_path} found in the repo — nothing to restore, try /scanrepo instead'
+
+    try:
+        remote = json.loads(content)
+    except Exception as e:
+        return False, f'could not parse {profile_path}: {e}'
+
+    remote_packages = remote.get('packages') or {}
+    remote_count = sum(len(p) for p in remote_packages.values())
+    if remote_count == 0:
+        return False, (f'{profile_path} in the repo has no packages either — '
+                        f'nothing to restore, try /scanrepo instead')
+
+    profile.packages = remote_packages
+    profile.language = remote.get('language', profile.language)
+    profile.frameworks = remote.get('frameworks', profile.frameworks)
+    profile.last_scanned_at = remote.get('last_scanned_at', profile.last_scanned_at)
+    profile._scan_skipped = None
+    return True, f'restored {remote_count} package(s) from {profile_path}'
+
+
 def _push_profile(profile: RepoProfile, gh: GithubClient, owner: str, repo: str):
     """Commit .nvd_bot/profile.json into the tracked repo.
 
