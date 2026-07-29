@@ -58,14 +58,24 @@ class GithubClient:
 
     def get_file_content(self, owner: str, repo: str, path: str,
                           token: str | None = None) -> str | None:
+        content, _ = self.get_file_content_checked(owner, repo, path, token)
+        return content
+
+    def get_file_content_checked(self, owner: str, repo: str, path: str,
+                                  token: str | None = None) -> tuple[str | None, int]:
+        """Like get_file_content, but also returns the HTTP status so callers
+        can tell "genuinely missing" (404) apart from "couldn't check"
+        (401/403 auth or permission error, rate limit, network/5xx) — those
+        look identical as a bare None and are easy to conflate into a
+        misleading "file doesn't exist" when the real problem is access."""
         r = self._get(f'/repos/{owner}/{repo}/contents/{path}', token=token)
         if r.status_code == 200:
             data = r.json()
             if data.get('encoding') == 'base64':
-                return base64.b64decode(data['content']).decode('utf-8', errors='replace')
+                return base64.b64decode(data['content']).decode('utf-8', errors='replace'), 200
         if r.status_code != 404:
             print(f'[github] get_file_content {path} failed: {r.status_code}')
-        return None
+        return None, r.status_code
 
     def get_file_sha(self, owner: str, repo: str, path: str,
                       token: str | None = None) -> str | None:

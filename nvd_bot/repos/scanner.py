@@ -111,9 +111,13 @@ def restore_from_committed_profile(profile: RepoProfile, gh: GithubClient) -> tu
         return False, f'cannot parse repo name: {profile.name}'
 
     profile_path = config.get('profile_file_path', '.nvd_bot/profile.json')
-    content = gh.get_file_content(owner, repo, profile_path, token=profile.github_token)
+    content, status = gh.get_file_content_checked(owner, repo, profile_path, token=profile.github_token)
     if not content:
-        return False, f'no {profile_path} found in the repo — nothing to restore, try /scanrepo instead'
+        if status == 404:
+            return False, f'no {profile_path} found in the repo — nothing to restore, try /scanrepo instead'
+        return False, (f'could not read {profile_path} from the repo (HTTP {status}) — '
+                        f'this looks like a token/permission or rate-limit problem, not a '
+                        f'missing file. Check the GitHub token for this repo, then try again.')
 
     try:
         remote = json.loads(content)
