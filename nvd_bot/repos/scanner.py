@@ -21,6 +21,16 @@ def scan_repo(profile: RepoProfile, gh: GithubClient, llm=None) -> dict:
         return profile.packages
 
     all_files = gh.list_files(owner, repo, token=profile.github_token)
+    if not all_files:
+        # list_files() already logged the failure. Bailing out here (instead
+        # of falling through to the import-scan/LLM fallback) matters
+        # specifically when this repo previously had real manifest-parsed
+        # packages: a transient GitHub API hiccup must not silently replace
+        # a good profile with an empty one and push that over the good copy.
+        print(f'[scanner] {profile.name}: could not list repo files — '
+              f'skipping scan, keeping existing profile')
+        return profile.packages
+
     packages: dict[str, dict[str, str]] = {}
 
     for dep_file in _DEP_FILES:
