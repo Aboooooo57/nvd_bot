@@ -27,7 +27,9 @@ def extract_meta(cve_item: dict) -> tuple[str, str, str, str]:
 
     severity = 'PENDING'
     metrics = cve.get('metrics', {})
-    if metrics.get('cvssMetricV31'):
+    if metrics.get('cvssMetricV40'):
+        severity = metrics['cvssMetricV40'][0]['cvssData']['baseSeverity']
+    elif metrics.get('cvssMetricV31'):
         severity = metrics['cvssMetricV31'][0]['cvssData']['baseSeverity']
     elif metrics.get('cvssMetricV30'):
         severity = metrics['cvssMetricV30'][0]['cvssData']['baseSeverity']
