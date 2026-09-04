@@ -272,6 +272,25 @@ intact.
 
 Review mutes with `/mutes`, undo with `/unmute <product>` or the buttons there.
 
+### What can open an issue
+
+Affected packages are read from three sources, in descending order of confidence:
+
+1. **`cve.affected[]`** — the CNA's own advisory. Names each package *and its own
+   version range*, so a range can never be attached to the wrong package.
+2. **CPE configurations** — authoritative; the range travels with the entry it belongs to.
+3. **Description prose** — a keyword paired with a version phrase immediately following it.
+
+Only the first two can open a GitHub issue. Prose matching is a guess, and a guess is
+fine for "you might want to read this" but never for "your dependency is vulnerable" —
+prose-derived matches appear in the digest and stop there.
+
+> This closes a real false-positive class. The prose fallback used to search the whole
+> sentence for a version, so *"marker before 1.10.0 … via the FastAPI upload handler"*
+> recorded `fastapi <1.10.0`. FastAPI is versioned `0.x`, so it sits below virtually
+> every ceiling NVD publishes — the mispairing matched every install of it and opened
+> issues on repos that were never affected.
+
 ### Coverage
 
 Two gaps that could otherwise lose CVEs without any visible sign:

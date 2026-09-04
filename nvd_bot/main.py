@@ -190,8 +190,12 @@ def _evaluate_cve(cve_item: dict, registry: RepoRegistry, gh: GithubClient,
         return
 
     affected = extract_affected_packages(cve_item)
+    # Opening an issue asserts "your dependency is vulnerable". Only the CNA's
+    # advisory and CPE data are good enough to say that; a package name scraped
+    # out of description prose is a guess and stays advisory-only.
+    confirmed = extract_affected_packages(cve_item, authoritative_only=True)
     repos = registry.list_repos()
-    matches = match_cve_to_repos(cve_item, repos, affected) if affected else []
+    matches = match_cve_to_repos(cve_item, repos, confirmed) if confirmed else []
     watchlist_hit = is_relevant_to_watchlist(description)
 
     if not matches and not watchlist_hit:
