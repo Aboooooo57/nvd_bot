@@ -20,14 +20,27 @@ def scan_repo(profile: RepoProfile, gh: GithubClient, llm=None) -> dict:
         print(f'[scanner] Cannot parse repo name: {profile.name}')
         return profile.packages
 
-    all_files = gh.list_files(owner, repo, token=profile.github_token)
+    all_files, status = gh.list_files_checked(owner, repo, token=profile.github_token)
     if not all_files:
-        # list_files() already logged the failure. Bailing out here (instead
-        # of falling through to the import-scan/LLM fallback) matters
-        # specifically when this repo previously had real manifest-parsed
-        # packages: a transient GitHub API hiccup must not silently replace
-        # a good profile with an empty one and push that over the good copy.
-        profile._scan_skipped = 'could not list repo files — kept previous data'
+        # Bailing out here (instead of falling through to the import-scan/LLM
+        # fallback) matters specifically when this repo previously had real
+        # manifest-parsed packages: a transient GitHub API hiccup must not
+        # silently replace a good profile with an empty one and push that
+        # over the good copy. Surfacing the real status code matters just as
+        # much for a *brand-new* repo with nothing to protect yet: a plain
+        # "could not list files" reads the same whether the repo is a 404
+        # typo, a 401 bad/missing token, or a 403 the token just can't see
+        # (e.g. a fine-grained PAT that hasn't been granted this repo yet).
+        if status == 404:
+            profile._scan_skipped = f'repo not found or not visible to this token (HTTP 404)'
+        elif status in (401, 403):
+            profile._scan_skipped = (
+                f'no access to list files (HTTP {status}) — check that the '
+                f'GitHub token for this repo actually covers it (a '
+                f'fine-grained PAT must have this repo explicitly granted)'
+            )
+        else:
+            profile._scan_skipped = f'could not list repo files (HTTP {status})'
         print(f'[scanner] {profile.name}: {profile._scan_skipped}')
         return profile.packages
 

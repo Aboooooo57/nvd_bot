@@ -45,6 +45,15 @@ class GithubClient:
         return 'main'
 
     def list_files(self, owner: str, repo: str, token: str | None = None) -> list[str]:
+        files, _ = self.list_files_checked(owner, repo, token)
+        return files
+
+    def list_files_checked(self, owner: str, repo: str,
+                            token: str | None = None) -> tuple[list[str], int]:
+        """Like list_files, but also returns the HTTP status so callers can
+        tell "repo has no files" apart from "couldn't check" (401/403 auth
+        or permission error, rate limit, network/5xx) — same reasoning as
+        get_file_content_checked."""
         r = self._get(f'/repos/{owner}/{repo}/git/trees/HEAD',
                       token=token, params={'recursive': '1'})
         if r.status_code == 200:
@@ -52,9 +61,9 @@ class GithubClient:
             if data.get('truncated'):
                 print(f'[github] {owner}/{repo}: tree truncated — some paths may be missing')
             return [item['path'] for item in data.get('tree', [])
-                    if item.get('type') == 'blob']
+                    if item.get('type') == 'blob'], 200
         print(f'[github] list_files failed: {r.status_code}')
-        return []
+        return [], r.status_code
 
     def get_file_content(self, owner: str, repo: str, path: str,
                           token: str | None = None) -> str | None:
