@@ -54,23 +54,51 @@ def parse_file(filename: str, content: str) -> dict[str, str]:
 
 
 def detect_language(file_list: list[str], packages: dict) -> tuple[str, list[str]]:
-    """Return (language, [framework, ...]) inferred from file extensions and package names."""
+    """Return (language, [framework, ...]).
+
+    Prefers the dependency manifests that were actually matched and parsed
+    (packages' keys) over blind file-extension scanning across the whole
+    tree: a repo can easily carry a stray .py script (a build helper, a
+    test runner) alongside its real go.mod/package.json without being a
+    Python project at all. Extension scanning is only a fallback for when
+    no manifest was found (import-scan/LLM-only repos, or genuinely none).
+    """
     all_files_lower = [f.lower() for f in file_list]
     all_pkgs: set[str] = set()
     for pkgs in packages.values():
         all_pkgs.update(pkgs.keys())
 
+    # Real manifest paths can be nested ("web/package.json"), so compare by
+    # basename rather than requiring an exact match against the full path.
+    manifest_basenames = {p.rsplit('/', 1)[-1].lower() for p in packages.keys()
+                          if p not in ('import-scan', 'llm-inferred')}
+
     language = 'unknown'
-    if any(f.endswith('.py') for f in all_files_lower) or 'requirements.txt' in all_files_lower:
+    if any(b.startswith('requirements') or b in ('setup.py', 'setup.cfg', 'pyproject.toml', 'pipfile')
+           for b in manifest_basenames):
         language = 'python'
-    elif 'package.json' in all_files_lower:
-        language = 'typescript' if any(f.endswith('.ts') for f in all_files_lower) else 'javascript'
-    elif 'go.mod' in all_files_lower:
+    elif any(b.startswith('environment') for b in manifest_basenames):
+        language = 'python'  # conda envs are predominantly python
+    elif 'go.mod' in manifest_basenames:
         language = 'go'
-    elif 'gemfile' in all_files_lower:
+    elif 'package.json' in manifest_basenames:
+        language = 'typescript' if any(f.endswith('.ts') for f in all_files_lower) else 'javascript'
+    elif 'gemfile' in manifest_basenames:
         language = 'ruby'
-    elif any(f.endswith('.java') for f in all_files_lower):
-        language = 'java'
+    elif not manifest_basenames:
+        # No manifest matched at all — fall back to the old extension sniff.
+        if any(f.endswith('.py') for f in all_files_lower):
+            language = 'python'
+        elif any(f.endswith('.go') for f in all_files_lower):
+            language = 'go'
+        elif any(f.endswith(('.ts', '.tsx')) for f in all_files_lower):
+            language = 'typescript'
+        elif any(f.endswith('.js') for f in all_files_lower):
+            language = 'javascript'
+        elif any(f.endswith('.rb') for f in all_files_lower):
+            language = 'ruby'
+        elif any(f.endswith('.java') for f in all_files_lower):
+            language = 'java'
 
     frameworks = [label for pkg, label in _FRAMEWORK_MARKERS.items() if pkg in all_pkgs]
     return language, frameworks
